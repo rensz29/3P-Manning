@@ -4,18 +4,25 @@ import {
   RadarChart, Radar, PolarGrid, PolarAngleAxis,
   PieChart, Pie, Cell, LineChart, Line, CartesianGrid, Legend,
 } from 'recharts';
-import {
-  SHIFTS, DEPARTMENTS, LINES_BY_DEPT, ALL_LINES,
-} from '../data/lineData';
+import { SHIFTS } from '../data/lineData';
 import { EXCESS_HISTORY } from '../hooks/useTurnstile';
 
-const DEPT_COLOR  = { flexibles: '#0057B8', rigids: '#7c3aed', process: '#0f766e' };
 const SHIFT_COLOR = { 1: '#38bdf8', 2: '#f59e0b', 3: '#a78bfa' };
 
-function buildAnalytics(assignments) {
-  const deptCapacity = DEPARTMENTS.map(dept => {
-    const lines    = LINES_BY_DEPT[dept.id] ?? [];
-    const quota    = lines.reduce((s, l) => s + l.skus.reduce((s2, sk) => s2 + sk.quota, 0), 0);
+function buildAnalytics(assignments, { allLines, departments, linesByDept, quotaOverrides = {} }) {
+  // quotaOverrides is now line-level (keyed by line.id) — not SKU-level.
+  // If a line doesn't exist in the map yet, we fall back to a neutral default.
+  const qLine = (line) => {
+    if (!line) return 0;
+    const override = quotaOverrides?.[line.id];
+    if (override != null) return Number(override);
+    // Fallback: sum of SKU "weights" (with current schedule-driven setup, this is typically number of SKUs).
+    return line.skus?.reduce((s, sk) => s + (Number(sk.quota) || 0), 0) ?? 0;
+  };
+
+  const deptCapacity = departments.map(dept => {
+    const lines    = linesByDept[dept.id] ?? [];
+    const quota    = lines.reduce((s, l) => s + qLine(l), 0);
     const total    = quota * SHIFTS.length;
     const assigned = lines.reduce((s, l) =>
       s + l.skus.reduce((s2, sk) =>
@@ -26,33 +33,44 @@ function buildAnalytics(assignments) {
   });
 
   const shiftStaffing = SHIFTS.map(sh => {
-    const req      = ALL_LINES.reduce((s, l) => s + l.skus.reduce((s2, sk) => s2 + sk.quota, 0), 0);
-    const assigned = ALL_LINES.reduce((s, l) =>
+    const req      = allLines.reduce((s, l) => s + qLine(l), 0);
+    const assigned = allLines.reduce((s, l) =>
       s + l.skus.reduce((s2, sk) => s2 + (assignments[sk.id]?.[sh.id]?.length ?? 0), 0), 0);
     return { shift: sh.fullLabel, icon: sh.icon, color: SHIFT_COLOR[sh.id], assigned, req, gap: Math.max(0, req - assigned) };
   });
 
-  const lineGaps = ALL_LINES.map(line => {
-    const req      = line.skus.reduce((s, sk) => s + sk.quota, 0);
+  const deptColorById = Object.fromEntries(departments.map(d => [d.id, d.color]));
+
+  const lineGaps = allLines.map(line => {
+    const req      = qLine(line);
     const assigned = line.skus.reduce((s, sk) =>
       s + SHIFTS.reduce((s2, sh) => s2 + (assignments[sk.id]?.[sh.id]?.length ?? 0), 0), 0);
     const total = req * SHIFTS.length;
     const pct   = total > 0 ? Math.round((assigned / total) * 100) : 100;
-    const dept  = line.dept ?? 'flexibles';
-    return { id: line.id, label: line.label, dept, color: DEPT_COLOR[dept], req, assigned, total, pct };
+    const deptId = line.dept ?? '';
+    return {
+      id: line.id,
+      label: line.label,
+      dept: deptId,
+      color: deptColorById[deptId] ?? '#64748b',
+      req,
+      assigned,
+      total,
+      pct,
+    };
   }).sort((a, b) => a.pct - b.pct);
 
-  const skuByDept = DEPARTMENTS.map(dept => {
-    const lines = LINES_BY_DEPT[dept.id] ?? [];
-    const quota = lines.reduce((s, l) => s + l.skus.reduce((s2, sk) => s2 + sk.quota, 0), 0);
+  const skuByDept = departments.map(dept => {
+    const lines = linesByDept[dept.id] ?? [];
+    const quota = lines.reduce((s, l) => s + qLine(l), 0);
     return { name: dept.label, value: quota, color: dept.color };
   });
 
   const radar = SHIFTS.map(sh => {
     const obj = { shift: sh.label };
-    DEPARTMENTS.forEach(dept => {
-      const lines = LINES_BY_DEPT[dept.id] ?? [];
-      const req   = lines.reduce((s, l) => s + l.skus.reduce((s2, sk) => s2 + sk.quota, 0), 0);
+    departments.forEach(dept => {
+      const lines = linesByDept[dept.id] ?? [];
+      const req   = lines.reduce((s, l) => s + qLine(l), 0);
       const asgn  = lines.reduce((s, l) =>
         s + l.skus.reduce((s2, sk) => s2 + (assignments[sk.id]?.[sh.id]?.length ?? 0), 0), 0);
       obj[dept.label] = req > 0 ? Math.round((asgn / req) * 100) : 0;
@@ -68,17 +86,6 @@ function buildAnalytics(assignments) {
   })();
 
   return { deptCapacity, shiftStaffing, lineGaps, skuByDept, radar, currentShift };
-}
-
-function buildEmptyAssignments() {
-  const map = {};
-  ALL_LINES.forEach(line =>
-    line.skus.forEach(sku => {
-      map[sku.id] = {};
-      SHIFTS.forEach(sh => { map[sku.id][sh.id] = []; });
-    })
-  );
-  return map;
 }
 
 // ── UI helpers ────────────────────────────────────────────────────────────────
@@ -220,8 +227,16 @@ function ExcessTable({ excessEmployees }) {
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
-export default function AnalyticsDashboard({ onBack, assignments: extAssignments, turnstileData }) {
-  const assignments = extAssignments ?? buildEmptyAssignments();
+export default function AnalyticsDashboard({
+  onBack,
+  assignments: extAssignments,
+  quotaOverrides = {},
+  allLines = [],
+  departments = [],
+  linesByDept = {},
+  turnstileData,
+}) {
+  const assignments = extAssignments ?? {};
   const [clock, setClock]     = useState(new Date());
   const [filterDept, setFilterDept] = useState('all');
 
@@ -231,7 +246,10 @@ export default function AnalyticsDashboard({ onBack, assignments: extAssignments
   }, []);
 
   const { deptCapacity, shiftStaffing, lineGaps, skuByDept, radar, currentShift }
-    = useMemo(() => buildAnalytics(assignments), [assignments]);
+    = useMemo(
+      () => buildAnalytics(assignments, { allLines, departments, linesByDept, quotaOverrides }),
+      [assignments, allLines, departments, linesByDept, quotaOverrides],
+    );
 
   // Turnstile data (passed from ShiftAssignment or use defaults)
   const {
@@ -243,17 +261,26 @@ export default function AnalyticsDashboard({ onBack, assignments: extAssignments
     totalExcess      = 0,
   } = turnstileData ?? {};
 
+  const qLine = (line) => {
+    const override = quotaOverrides?.[line.id];
+    if (override != null) return Number(override);
+    return line.skus?.reduce((s, sk) => s + (Number(sk.quota) || 0), 0) ?? 0;
+  };
   // KPI summary
-  const totalRequired = ALL_LINES.reduce((s, l) => s + l.skus.reduce((s2, sk) => s2 + sk.quota, 0), 0);
-  const totalAssigned = ALL_LINES.reduce((s, l) =>
+  const totalRequired = allLines.reduce((s, l) => s + qLine(l), 0);
+  const totalAssigned = allLines.reduce((s, l) =>
     s + l.skus.reduce((s2, sk) =>
       s2 + SHIFTS.reduce((s3, sh) => s3 + (assignments[sk.id]?.[sh.id]?.length ?? 0), 0), 0), 0);
   const totalSlots    = totalRequired * SHIFTS.length;
   const overallPct    = totalSlots > 0 ? Math.round((totalAssigned / totalSlots) * 100) : 0;
-  const fullyStaffed  = ALL_LINES.filter(line =>
-    line.skus.every(sk =>
-      SHIFTS.every(sh => sk.quota === 0 || (assignments[sk.id]?.[sh.id]?.length ?? 0) >= sk.quota)
-    )
+  const fullyStaffed  = allLines.filter(line =>
+    SHIFTS.every(sh => {
+      const assignedForLineInShift = line.skus.reduce(
+        (s, sk) => s + (assignments[sk.id]?.[sh.id]?.length ?? 0),
+        0,
+      );
+      return assignedForLineInShift >= qLine(line);
+    })
   ).length;
   const criticalLines = lineGaps.filter(l => l.pct < 50).length;
 
@@ -430,7 +457,7 @@ export default function AnalyticsDashboard({ onBack, assignments: extAssignments
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '14px' }}>
               <KpiCard label="Overall Fill Rate"    value={`${overallPct}%`}                                    sub={`${totalAssigned} of ${totalSlots} slots filled`} color="#0057B8" icon="📈" delay={0} />
-              <KpiCard label="Lines Fully Staffed"  value={`${fullyStaffed}/${ALL_LINES.length}`}               sub={`${ALL_LINES.length - fullyStaffed} lines still need staff`}     color="#22c55e" icon="✅" delay={0.06} />
+              <KpiCard label="Lines Fully Staffed"  value={`${fullyStaffed}/${allLines.length || 0}`}               sub={`${Math.max(0, allLines.length - fullyStaffed)} lines still need staff`}     color="#22c55e" icon="✅" delay={0.06} />
               <KpiCard label="Critical Lines"       value={criticalLines}                                       sub="Lines below 50% staffing"                                         color="#ef4444" icon="⚠️" delay={0.12} />
               <KpiCard label="Total Manpower Req"   value={totalRequired}                                       sub={`per shift · ${totalRequired * 3} across all 3 shifts`}           color="#f59e0b" icon="👷" delay={0.18} />
             </div>
@@ -525,7 +552,7 @@ export default function AnalyticsDashboard({ onBack, assignments: extAssignments
                 <RadarChart data={radar} cx="50%" cy="50%" outerRadius={75}>
                   <PolarGrid stroke="#e2e8f0"/>
                   <PolarAngleAxis dataKey="shift" tick={{ fontFamily: "'DM Mono',monospace", fontSize: 12, fill: '#64748b' }}/>
-                  {DEPARTMENTS.map(dept => (
+                  {departments.map(dept => (
                     <Radar key={dept.id} name={dept.label} dataKey={dept.label}
                       stroke={dept.color} fill={dept.color} fillOpacity={0.12} strokeWidth={2}/>
                   ))}
@@ -541,8 +568,8 @@ export default function AnalyticsDashboard({ onBack, assignments: extAssignments
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
               <SectionTitle sub="Staffing fill rate per production line across all shifts">Line-Level Staffing Status</SectionTitle>
               <div style={{ display: 'flex', gap: '6px' }}>
-                {['all', ...DEPARTMENTS.map(d => d.id)].map(id => {
-                  const dept = DEPARTMENTS.find(d => d.id === id);
+                {['all', ...departments.map(d => d.id)].map(id => {
+                  const dept = departments.find(d => d.id === id);
                   const isActive = filterDept === id;
                   return (
                     <button key={id} onClick={() => setFilterDept(id)} style={{
@@ -571,7 +598,7 @@ export default function AnalyticsDashboard({ onBack, assignments: extAssignments
                     <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: l.color, flexShrink: 0 }}/>
                     <span style={{ fontFamily: "'DM Sans',sans-serif", fontSize: '0.78rem', fontWeight: 600, color: '#0f172a' }}>{l.label}</span>
                     <span style={{ fontFamily: "'DM Mono',monospace", fontSize: '0.46rem', color: l.color, background: l.color + '12', padding: '1px 5px', borderRadius: '99px', border: `1px solid ${l.color}25` }}>
-                      {DEPARTMENTS.find(d => d.id === l.dept)?.label}
+                      {departments.find(d => d.id === l.dept)?.label}
                     </span>
                   </div>
                   <div style={{ textAlign: 'center' }}>

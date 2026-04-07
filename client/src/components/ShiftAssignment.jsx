@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useAssignment } from '../hooks/useAssignment';
 import { useTurnstile }  from '../hooks/useTurnstile';
 import { useAuth }       from '../hooks/useAuth';
@@ -9,18 +9,33 @@ import AnalyticsDashboard from './AnalyticsDashboard';
 import SettingsPage      from './SettingsPage';
 import AdminPage         from './AdminPage';
 import LoginPage         from './LoginPage';
-import {
-  SHIFTS,
-  DRESSINGS_DEPARTMENTS, DRESSINGS_LINES_BY_DEPT, DRESSINGS_ALL_LINES,
-  SAVOURY_DEPARTMENTS,   SAVOURY_LINES_BY_DEPT,   SAVOURY_ALL_LINES,
-  ALL_LINES,
-} from '../data/lineData';
+import { io }            from 'socket.io-client';
+import { SHIFTS } from '../data/lineData';
+import { buildScheduleLayout } from '../utils/scheduleLines';
+import { getVariantLineTotalFromRows, getEffectiveSkuQuotas } from '../utils/scheduleQuotas';
 
 const getCurrentShift = () => {
   const h = new Date().getHours();
   if (h >= 6 && h < 14) return 1;
   if (h >= 14 && h < 22) return 2;
   return 3;
+};
+
+const toYMD = (d = new Date()) => {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+};
+
+const normalizeMachineName = (v = '') =>
+  String(v).toLowerCase().replace(/[^a-z0-9]/g, '');
+
+const machineMatchesLine = (machine, lineLabel) => {
+  const m = normalizeMachineName(machine);
+  const l = normalizeMachineName(lineLabel);
+  if (!m || !l) return false;
+  return m === l || m.startsWith(l) || l.startsWith(m) || m.includes(l) || l.includes(m);
 };
 
 // ── Pages ──────────────────────────────────────────────────────────────────────
@@ -96,54 +111,218 @@ function StatPill({ label, value, highlight, warn }) {
   );
 }
 
-// ── Plant tab config ───────────────────────────────────────────────────────────
-const PLANT_CONFIG = {
-  dressings: {
-    label: 'Dressings', icon: '🥗', color: '#0057B8',
-    depts: DRESSINGS_DEPARTMENTS, linesByDept: DRESSINGS_LINES_BY_DEPT,
-    allLines: DRESSINGS_ALL_LINES, defaultDept: 'drs_flexibles',
-  },
-  savoury: {
-    label: 'Savoury', icon: '🧂', color: '#b45309',
-    depts: SAVOURY_DEPARTMENTS, linesByDept: SAVOURY_LINES_BY_DEPT,
-    allLines: SAVOURY_ALL_LINES, defaultDept: 'sav_powders',
-  },
-};
-
 // ── Main ──────────────────────────────────────────────────────────────────────
 export default function ShiftAssignment({ onBack } = {}) {
   const { session, isLoggedIn, isAdmin, displayName, login, logout } = useAuth();
 
-  const {
-    employees, assignments, assignedIds, dragEmpId,
-    startDrag, endDrag,
-    assignEmployee, unassignEmployee, getAssignedEmployees,
-    getShiftTotal, getShiftRequired, getDeptShiftTotal, getDeptShiftRequired,
-    getScheduledIdsForShift,
-  } = useAssignment();
-
   // ── Page / navigation state ──────────────────────────────────────────────
   const [page, setPage]             = useState(PAGES.DRESSINGS);
   const [activePlant, setActivePlant] = useState('dressings'); // 'dressings' | 'savoury'
-  const [activeDept,  setActiveDept]  = useState('drs_flexibles');
+  const [activeDept,  setActiveDept]  = useState('');
 
-  // ── Settings: overridden quotas ──────────────────────────────────────────
-  // { [skuId]: newQuotaValue }  — only stores changed values
-  const [quotaOverrides, setQuotaOverrides] = useState({});
-  const handleQuotaChange = (skuId, val) =>
-    setQuotaOverrides(prev => ({ ...prev, [skuId]: val }));
-  const handleResetAll = () => setQuotaOverrides({});
+  // ── Settings: overridden line manpower ────────────────────────────────
+  // { [lineId]: newManpowerValue } — only stores changed values
+  const [lineManpowerOverrides, setLineManpowerOverrides] = useState({});
+  const handleLineQuotaChange = (lineId, val) => {
+    setLineManpowerOverrides(prev => {
+      const next = { ...prev };
+      if (val == null || val === '') {
+        delete next[lineId];
+      } else {
+        next[lineId] = val;
+      }
+      return next;
+    });
+  };
+  const handleResetAll = () => setLineManpowerOverrides({});
 
   // ── Other UI state ───────────────────────────────────────────────────────
   const [clock, setClock]           = useState(new Date());
   const [toast, setToast]           = useState(null);
   const [poolVisible, setPoolVisible] = useState(true);
+  const [scheduleByPlant, setScheduleByPlant] = useState({ dressings: [], savoury: [] });
+  const [dbScheduleLoading, setDbScheduleLoading] = useState(false);
+  const [dbScheduleError, setDbScheduleError] = useState(null);
+  const [sessionStatus, setSessionStatus] = useState('draft'); // draft | submitted | approved
+  const [sessionSubmittedBy, setSessionSubmittedBy] = useState('');
+  const [sessionApprovedBy, setSessionApprovedBy] = useState('');
 
   const curShift    = getCurrentShift();
   const curShiftObj = SHIFTS.find(s => s.id === curShift);
+  const currentDate = toYMD(clock);
 
-  const plantCfg   = PLANT_CONFIG[activePlant];
-  const lines       = plantCfg.linesByDept[activeDept] ?? [];
+  const layoutDressings = useMemo(
+    () => buildScheduleLayout(scheduleByPlant.dressings, 'dressings'),
+    [scheduleByPlant.dressings],
+  );
+  const layoutSavoury = useMemo(
+    () => buildScheduleLayout(scheduleByPlant.savoury, 'savoury'),
+    [scheduleByPlant.savoury],
+  );
+  const allLinesCombined = useMemo(
+    () => [...layoutDressings.allLines, ...layoutSavoury.allLines],
+    [layoutDressings, layoutSavoury],
+  );
+
+  const lineIdsKey = useMemo(() => allLinesCombined.map(l => l.id).join('|'), [allLinesCombined]);
+
+  // Default required manpower per line (resolved from DB schedule variants).
+  const lineTotalsById = useMemo(() => {
+    const norm = (s) => String(s ?? '').trim().toLowerCase();
+    const defaultSectionForPlant = (plantKey) =>
+      plantKey === 'dressings' ? 'DRESSINGS' : 'SAVOURY';
+
+    const map = {};
+    for (const line of allLinesCombined) {
+      const rows = (scheduleByPlant[line.plant] ?? []).filter((r) => {
+        const secRow = ((r.section && String(r.section).trim()) || defaultSectionForPlant(line.plant));
+        return norm(r.machine) === norm(line.machine) && norm(secRow) === norm(line.sectionKey);
+      });
+
+      const variantTotal = getVariantLineTotalFromRows(rows);
+      map[line.id] = variantTotal ?? line.skus.reduce((s, sk) => s + (Number(sk.quota) || 0), 0);
+    }
+    return map;
+  }, [scheduleByPlant, allLinesCombined]);
+
+  // Load persisted operator overrides for required manpower per line.
+  const seededForLineIdsKeyRef = useRef(null);
+  useEffect(() => {
+    let ignore = false;
+
+    const loadLineOverrides = async () => {
+      if (!allLinesCombined.length) {
+        if (!ignore) setLineManpowerOverrides({});
+        return;
+      }
+
+      try {
+        const lineIds = allLinesCombined.map(l => l.id);
+        const res = await fetch('/api/v1/settings/lines/bulk', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ lineIds }),
+        });
+        if (!res.ok) throw new Error(`Failed to load line settings (${res.status})`);
+        const body = await res.json().catch(() => null);
+        const overridesMap = body?.data ?? body ?? {};
+
+        if (ignore) return;
+
+        // If nothing exists in DB yet, seed it with schedule-derived defaults
+        // for all discovered machine lines (line-level quota only).
+        if (
+          (!overridesMap || Object.keys(overridesMap).length === 0) &&
+          seededForLineIdsKeyRef.current !== lineIdsKey
+        ) {
+          try {
+            const scopeLineIds = allLinesCombined.map(l => l.id);
+            const items = scopeLineIds.map(lineId => ({
+              lineId,
+              quota: Number(lineTotalsById?.[lineId] ?? 0),
+            }));
+
+            const seedRes = await fetch('/api/v1/settings/lines/scope', {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ scopeLineIds, items }),
+            });
+            if (!seedRes.ok) throw new Error(`Failed to seed settings (${seedRes.status})`);
+
+            const seededMap = {};
+            for (const it of items) seededMap[it.lineId] = it.quota;
+            setLineManpowerOverrides(seededMap);
+            seededForLineIdsKeyRef.current = lineIdsKey;
+            return;
+          } catch (_seedErr) {
+            // Fall back to schedule variant defaults via empty overrides map.
+          }
+        }
+
+        setLineManpowerOverrides(overridesMap || {});
+      } catch (err) {
+        if (!ignore) setLineManpowerOverrides({});
+      }
+    };
+
+    loadLineOverrides();
+    return () => {
+      ignore = true;
+    };
+  }, [lineIdsKey, allLinesCombined, lineTotalsById]);
+
+  const {
+    employees, assignments, assignedIds, dragEmpId,
+    startDrag, endDrag,
+    assignEmployee, unassignEmployee, getAssignedEmployees,
+    getShiftTotal, getShiftRequired, getDeptShiftTotal,
+    getScheduledIdsForShift,
+    replaceAssignments,
+    assignRevision,
+  } = useAssignment(allLinesCombined);
+
+  const applyingRemoteUpdateRef = useRef(false);
+  const sessionLoadedRef = useRef(false);
+  const lastPersistedSignatureRef = useRef('');
+
+  const currentLayout = activePlant === 'dressings' ? layoutDressings : layoutSavoury;
+  const plantCfg = useMemo(() => ({
+    depts: currentLayout.departments,
+    linesByDept: currentLayout.linesByDept,
+    allLines: currentLayout.allLines,
+  }), [currentLayout]);
+
+  const filteredLines = useMemo(
+    () => plantCfg.linesByDept[activeDept] ?? [],
+    [plantCfg.linesByDept, activeDept],
+  );
+  const hasAvailableSchedule = filteredLines.length > 0;
+
+  const dbScheduleRows = activePlant === 'dressings' ? scheduleByPlant.dressings : scheduleByPlant.savoury;
+
+  const scheduleByLineId = useMemo(() => {
+    const map = {};
+    for (const line of filteredLines) {
+      const norm = (s) => String(s ?? '').trim().toLowerCase();
+      const defaultSection = activePlant === 'dressings' ? 'DRESSINGS' : 'SAVOURY';
+      map[line.id] = dbScheduleRows.filter(row => {
+        const secRow = ((row.section && String(row.section).trim()) || defaultSection);
+        return machineMatchesLine(row.machine, line.label) && norm(secRow) === norm(line.sectionKey);
+      });
+    }
+    return map;
+  }, [filteredLines, dbScheduleRows]);
+
+  const analyticsDepartments = useMemo(
+    () => [...layoutDressings.departments, ...layoutSavoury.departments],
+    [layoutDressings, layoutSavoury],
+  );
+  const analyticsLinesByDept = useMemo(() => ({
+    ...layoutDressings.linesByDept,
+    ...layoutSavoury.linesByDept,
+  }), [layoutDressings.linesByDept, layoutSavoury.linesByDept]);
+
+  const assignmentsSignature = useMemo(() => {
+    try {
+      return JSON.stringify(assignments ?? {});
+    } catch {
+      return '';
+    }
+  }, [assignments]);
+
+  const allScheduleByLineId = useMemo(() => {
+    const map = {};
+    const norm = (s) => String(s ?? '').trim().toLowerCase();
+    const defaultSectionForPlant = (plantKey) => (plantKey === 'dressings' ? 'DRESSINGS' : 'SAVOURY');
+    for (const line of allLinesCombined) {
+      const rows = (scheduleByPlant[line.plant] ?? []).filter((row) => {
+        const secRow = ((row.section && String(row.section).trim()) || defaultSectionForPlant(line.plant));
+        return machineMatchesLine(row.machine, line.label) && norm(secRow) === norm(line.sectionKey);
+      });
+      map[line.id] = rows;
+    }
+    return map;
+  }, [allLinesCombined, scheduleByPlant]);
 
   // ── Turnstile ────────────────────────────────────────────────────────────
   const scheduledIdsForCurrentShift = useMemo(
@@ -163,35 +342,238 @@ export default function ShiftAssignment({ onBack } = {}) {
   }, []);
 
   useEffect(() => {
+    let ignore = false;
+
+    const loadSchedule = async () => {
+      setDbScheduleLoading(true);
+      setDbScheduleError(null);
+
+      try {
+        const qs = new URLSearchParams({ date: currentDate, shift: String(curShift) });
+        const [dRes, sRes] = await Promise.all([
+          fetch(`/api/v1/upload/schedule?tab=dressings&${qs}`),
+          fetch(`/api/v1/upload/schedule?tab=savoury&${qs}`),
+        ]);
+        if (!dRes.ok || !sRes.ok) {
+          throw new Error(`Failed to fetch schedule (${dRes.status}/${sRes.status})`);
+        }
+        const dJson = await dRes.json();
+        const sJson = await sRes.json();
+
+        console.log(dJson, sJson);
+        if (!ignore) {
+          setScheduleByPlant({
+            dressings: dJson?.data?.rows ?? [],
+            savoury: sJson?.data?.rows ?? [],
+          });
+        }
+      } catch (err) {
+        if (!ignore) {
+          setScheduleByPlant({ dressings: [], savoury: [] });
+          setDbScheduleError(err.message || 'Failed to fetch schedule');
+        }
+      } finally {
+        if (!ignore) setDbScheduleLoading(false);
+      }
+    };
+
+    loadSchedule();
+    return () => { ignore = true; };
+  }, [currentDate, curShift]);
+
+  useEffect(() => {
+    const depts = plantCfg.depts;
+    if (!depts.length) return;
+    if (!depts.some(d => d.id === activeDept)) {
+      setActiveDept(depts[0].id);
+    }
+  }, [activePlant, plantCfg.depts, activeDept]);
+
+  // Load persisted assignment session for selected date.
+  useEffect(() => {
+    let ignore = false;
+    sessionLoadedRef.current = false;
+
+    const loadSession = async () => {
+      try {
+        const res = await fetch(`/api/v1/assignments/session?date=${encodeURIComponent(currentDate)}`);
+        if (!res.ok) throw new Error(`Failed to load assignment session (${res.status})`);
+        const body = await res.json();
+        const data = body?.data ?? {};
+        if (ignore) return;
+        applyingRemoteUpdateRef.current = true;
+        replaceAssignments(data.assignments ?? {});
+        lastPersistedSignatureRef.current = JSON.stringify(data.assignments ?? {});
+        setSessionStatus(data.status ?? 'draft');
+        setSessionSubmittedBy(data.submittedBy ?? '');
+        setSessionApprovedBy(data.approvedBy ?? '');
+        sessionLoadedRef.current = true;
+        setTimeout(() => { applyingRemoteUpdateRef.current = false; }, 0);
+      } catch (_err) {
+        if (ignore) return;
+        sessionLoadedRef.current = true;
+      }
+    };
+
+    loadSession();
+    return () => { ignore = true; };
+  }, [currentDate, replaceAssignments]);
+
+  // Realtime updates across all users.
+  useEffect(() => {
+    const socket = io('/', { transports: ['websocket', 'polling'] });
+    socket.emit('assignment.join', { date: currentDate });
+    socket.on('assignment.session.updated', ({ date, session: nextSession }) => {
+      if (date !== currentDate || !nextSession) return;
+      applyingRemoteUpdateRef.current = true;
+      replaceAssignments(nextSession.assignments ?? {});
+      lastPersistedSignatureRef.current = JSON.stringify(nextSession.assignments ?? {});
+      setSessionStatus(nextSession.status ?? 'draft');
+      setSessionSubmittedBy(nextSession.submittedBy ?? '');
+      setSessionApprovedBy(nextSession.approvedBy ?? '');
+      setTimeout(() => { applyingRemoteUpdateRef.current = false; }, 0);
+    });
+    return () => {
+      socket.emit('assignment.leave', { date: currentDate });
+      socket.disconnect();
+    };
+  }, [currentDate, replaceAssignments]);
+
+  // Persist assignment edits (debounced) to backend session.
+  useEffect(() => {
+    if (!sessionLoadedRef.current) return;
+    if (applyingRemoteUpdateRef.current) return;
+    if (sessionStatus !== 'draft') return;
+    if (assignmentsSignature === lastPersistedSignatureRef.current) return;
+
+    const t = setTimeout(async () => {
+      try {
+        await fetch('/api/v1/assignments/session', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            date: currentDate,
+            assignments,
+            actor: {
+              username: session?.username ?? '',
+              displayName: session?.displayName ?? '',
+              role: isAdmin ? 'admin' : 'user',
+            },
+          }),
+        });
+        lastPersistedSignatureRef.current = assignmentsSignature;
+      } catch (_err) {
+        // Keep UI responsive even if sync momentarily fails.
+      }
+    }, 250);
+
+    return () => clearTimeout(t);
+  }, [assignRevision, assignments, assignmentsSignature, currentDate, session, isAdmin, sessionStatus]);
+
+  useEffect(() => {
     if (totalExcess > 0)
       setToast({ msg: `${totalExcess} unscheduled employee${totalExcess > 1 ? 's' : ''} detected on-site`, type: 'excess' });
   }, [totalExcess]);
 
+  const isLocked = sessionStatus !== 'draft';
+
   const handleDrop = useCallback((skuId, shiftId, quota) => {
+    if (isLocked) return;
     assignEmployee(skuId, shiftId, quota);
     setToast({ msg: 'Employee assigned!', type: 'success' });
-  }, [assignEmployee]);
+  }, [assignEmployee, isLocked]);
 
   const handleRemove = useCallback((empId, skuId, shiftId) => {
+    if (isLocked) return;
     unassignEmployee(empId, skuId, shiftId);
     setToast({ msg: 'Employee unassigned', type: 'info' });
-  }, [unassignEmployee]);
+  }, [unassignEmployee, isLocked]);
 
-  // KPI totals (all plants combined)
+  const buildRequiredBySkuShift = useCallback(() => {
+    const map = {};
+    for (const line of allLinesCombined) {
+      const rows = allScheduleByLineId[line.id] ?? [];
+      const effective = getEffectiveSkuQuotas(line, rows, lineManpowerOverrides);
+      for (const sku of effective) {
+        for (const sh of SHIFTS) {
+          map[`${sku.id}|${sh.id}`] = sku.effectiveQuota;
+        }
+      }
+    }
+    return map;
+  }, [allLinesCombined, allScheduleByLineId, lineManpowerOverrides]);
+
+  const submitForApproval = useCallback(async () => {
+    try {
+      const requiredBySkuShift = buildRequiredBySkuShift();
+      const res = await fetch('/api/v1/assignments/submit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          date: currentDate,
+          requiredBySkuShift,
+          actor: {
+            username: session?.username ?? '',
+            displayName: session?.displayName ?? '',
+            role: isAdmin ? 'admin' : 'user',
+          },
+        }),
+      });
+      if (!res.ok) {
+        const txt = await res.text().catch(() => '');
+        throw new Error(txt || `Submit failed (${res.status})`);
+      }
+      setToast({ msg: 'Session submitted for admin approval', type: 'success' });
+    } catch (err) {
+      setToast({ msg: err.message || 'Submit failed', type: 'warn' });
+    }
+  }, [buildRequiredBySkuShift, currentDate, session, isAdmin]);
+
+  const approveSession = useCallback(async () => {
+    try {
+      const res = await fetch('/api/v1/assignments/approve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          date: currentDate,
+          actor: {
+            username: session?.username ?? '',
+            displayName: session?.displayName ?? '',
+            role: isAdmin ? 'admin' : 'user',
+          },
+        }),
+      });
+      if (!res.ok) {
+        const txt = await res.text().catch(() => '');
+        throw new Error(txt || `Approve failed (${res.status})`);
+      }
+      setToast({ msg: 'Session approved by admin', type: 'success' });
+    } catch (err) {
+      setToast({ msg: err.message || 'Approve failed', type: 'warn' });
+    }
+  }, [currentDate, session, isAdmin]);
+
+  // KPI totals (all plants combined — schedule-driven lines)
   const totalEmp      = employees.length;
   const totalAssigned = assignedIds.size;
-  const totalRequired = ALL_LINES.reduce((s, l) => s + l.skus.reduce((s2, sk) => s2 + (quotaOverrides[sk.id] ?? sk.quota) * SHIFTS.length, 0), 0);
+  const totalRequiredPerShift = allLinesCombined.reduce((s, l) => s + (lineManpowerOverrides?.[l.id] ?? lineTotalsById?.[l.id] ?? 0), 0);
+  const totalRequired = totalRequiredPerShift * SHIFTS.length;
   const overallPct    = totalRequired > 0 ? Math.min(Math.round((totalAssigned / totalRequired) * 100), 100) : 0;
-  const linesFullyStaffed = ALL_LINES.filter(line =>
-    line.skus.every(sku =>
-      SHIFTS.every(sh => (quotaOverrides[sku.id] ?? sku.quota) === 0 || (getAssignedEmployees(sku.id, sh.id)?.length ?? 0) >= (quotaOverrides[sku.id] ?? sku.quota))
-    )
-  ).length;
+  const linesFullyStaffed = allLinesCombined.filter(line => {
+    const req = lineManpowerOverrides?.[line.id] ?? lineTotalsById?.[line.id] ?? 0;
+    return SHIFTS.every(sh => {
+      const assignedForLineInShift = line.skus.reduce(
+        (s, sku) => s + (getAssignedEmployees(sku.id, sh.id)?.length ?? 0),
+        0,
+      );
+      return req === 0 || assignedForLineInShift >= req;
+    });
+  }).length;
 
-  // Switch plant → reset dept to that plant's default
   const switchPlant = (plantId) => {
+    const lay = plantId === 'dressings' ? layoutDressings : layoutSavoury;
     setActivePlant(plantId);
-    setActiveDept(PLANT_CONFIG[plantId].defaultDept);
+    setActiveDept(lay.departments[0]?.id ?? '');
     setPage(plantId === 'dressings' ? PAGES.DRESSINGS : PAGES.SAVOURY);
   };
 
@@ -217,7 +599,10 @@ export default function ShiftAssignment({ onBack } = {}) {
     return (
       <AnalyticsDashboard
         assignments={assignments}
-        quotaOverrides={quotaOverrides}
+        quotaOverrides={lineManpowerOverrides}
+        allLines={allLinesCombined}
+        departments={analyticsDepartments}
+        linesByDept={analyticsLinesByDept}
         turnstileData={{ excessEmployees, scheduledPresent, scheduledAbsent, totalIn, totalExcess }}
         onBack={() => setPage(activePlant === 'dressings' ? PAGES.DRESSINGS : PAGES.SAVOURY)}
       />
@@ -227,14 +612,18 @@ export default function ShiftAssignment({ onBack } = {}) {
   if (page === PAGES.SETTINGS) {
     return (
       <SettingsPage
-        quotas={quotaOverrides}
-        onQuotaChange={handleQuotaChange}
+        lineQuotas={lineManpowerOverrides}
+        onLineQuotaChange={handleLineQuotaChange}
         onResetAll={handleResetAll}
+        dressingsLayout={layoutDressings}
+        savouryLayout={layoutSavoury}
+        lineTotalsById={lineTotalsById}
+        initialPlant={activePlant}
         onBack={() => setPage(activePlant === 'dressings' ? PAGES.DRESSINGS : PAGES.SAVOURY)}
       />
     );
   }
-
+  
   // ── Main shift assignment view ────────────────────────────────────────────
   return (
     <>
@@ -303,6 +692,31 @@ export default function ShiftAssignment({ onBack } = {}) {
                 ><span>⚙️</span> Settings</button>
               </>
             )}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '5px 10px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.15)', background: sessionStatus === 'approved' ? 'rgba(16,185,129,0.2)' : sessionStatus === 'submitted' ? 'rgba(245,158,11,0.18)' : 'rgba(148,163,184,0.18)' }}>
+              <span style={{ fontFamily: "'DM Mono',monospace", fontSize: '0.58rem', color: '#fff', fontWeight: 700 }}>
+                {sessionStatus.toUpperCase()}
+              </span>
+              {sessionStatus === 'submitted' && sessionSubmittedBy && (
+                <span style={{ fontFamily: "'DM Mono',monospace", fontSize: '0.5rem', color: 'rgba(255,255,255,0.7)' }}>
+                  by {sessionSubmittedBy}
+                </span>
+              )}
+              {sessionStatus === 'approved' && sessionApprovedBy && (
+                <span style={{ fontFamily: "'DM Mono',monospace", fontSize: '0.5rem', color: 'rgba(255,255,255,0.7)' }}>
+                  by {sessionApprovedBy}
+                </span>
+              )}
+            </div>
+            {sessionStatus === 'draft' && (
+              <button onClick={submitForApproval} style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 14px', borderRadius: '8px', background: 'rgba(14,165,233,0.18)', border: '1px solid rgba(14,165,233,0.35)', color: '#bae6fd', cursor: 'pointer', fontFamily: "'DM Sans',sans-serif", fontSize: '0.72rem', fontWeight: 700 }}>
+                <span>📨</span> Submit
+              </button>
+            )}
+            {isAdmin && sessionStatus === 'submitted' && (
+              <button onClick={approveSession} style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 14px', borderRadius: '8px', background: 'rgba(34,197,94,0.18)', border: '1px solid rgba(34,197,94,0.35)', color: '#bbf7d0', cursor: 'pointer', fontFamily: "'DM Sans',sans-serif", fontSize: '0.72rem', fontWeight: 700 }}>
+                <span>✅</span> Approve
+              </button>
+            )}
             {/* User info + logout */}
             <div style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '4px 10px', borderRadius: '8px', background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.09)' }}>
               <span style={{ fontFamily: "'DM Mono',monospace", fontSize: '0.6rem', color: 'rgba(255,255,255,0.5)' }}>{displayName}</span>
@@ -320,7 +734,7 @@ export default function ShiftAssignment({ onBack } = {}) {
                   <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: '4px', padding: '5px 10px', borderRadius: '8px', background: isCur ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.06)', border: `1px solid ${isCur ? 'rgba(255,255,255,0.25)' : 'rgba(255,255,255,0.08)'}` }}>
                     <span style={{ fontSize: '0.8rem' }}>{s.icon}</span>
                     <span style={{ fontFamily: "'DM Mono',monospace", fontSize: '0.6rem', color: isCur ? '#fff' : 'rgba(255,255,255,0.45)', fontWeight: isCur ? 600 : 400 }}>{s.label}</span>
-                    <span style={{ padding: '1px 5px', borderRadius: '99px', fontSize: '0.58rem', fontWeight: 700, fontFamily: "'DM Mono',monospace", background: isCur ? 'rgba(74,222,128,0.15)' : 'rgba(255,255,255,0.07)', border: `1px solid ${isCur ? 'rgba(74,222,128,0.3)' : 'rgba(255,255,255,0.1)'}`, color: isCur ? '#86efac' : 'rgba(255,255,255,0.4)' }}>{getShiftTotal(s.id)}/{getShiftRequired()}</span>
+                    <span style={{ padding: '1px 5px', borderRadius: '99px', fontSize: '0.58rem', fontWeight: 700, fontFamily: "'DM Mono',monospace", background: isCur ? 'rgba(74,222,128,0.15)' : 'rgba(255,255,255,0.07)', border: `1px solid ${isCur ? 'rgba(74,222,128,0.3)' : 'rgba(255,255,255,0.1)'}`, color: isCur ? '#86efac' : 'rgba(255,255,255,0.4)' }}>{getShiftTotal(s.id)}/{totalRequiredPerShift}</span>
                   </div>
                 );
               })}
@@ -365,7 +779,7 @@ export default function ShiftAssignment({ onBack } = {}) {
             <div style={{ display: 'flex', gap: '16px', padding: '0 16px 0 0', marginRight: '12px', borderRight: '1px solid rgba(255,255,255,0.1)' }}>
               <StatPill label="Total 3P"   value={totalEmp} />
               <StatPill label="Assigned"   value={totalAssigned} highlight={totalAssigned > 0} />
-              <StatPill label="Lines Full" value={`${linesFullyStaffed}/${ALL_LINES.length}`} highlight={linesFullyStaffed === ALL_LINES.length} />
+              <StatPill label="Lines Full" value={`${linesFullyStaffed}/${allLinesCombined.length}`} highlight={allLinesCombined.length > 0 && linesFullyStaffed === allLinesCombined.length} />
             </div>
             <div style={{ background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '10px', padding: '7px 14px', minWidth: '130px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
@@ -413,7 +827,7 @@ export default function ShiftAssignment({ onBack } = {}) {
             const isActive   = dept.id === activeDept;
             const deptLines  = plantCfg.linesByDept[dept.id] ?? [];
             const dAssigned  = deptLines.reduce((s, l) => s + l.skus.reduce((s2, sk) => s2 + SHIFTS.reduce((s3, sh) => s3 + (getAssignedEmployees(sk.id, sh.id)?.length ?? 0), 0), 0), 0);
-            const dRequired  = deptLines.reduce((s, l) => s + l.skus.reduce((s2, sk) => s2 + (quotaOverrides[sk.id] ?? sk.quota) * SHIFTS.length, 0), 0);
+            const dRequired  = deptLines.reduce((s, l) => s + (lineManpowerOverrides?.[l.id] ?? lineTotalsById?.[l.id] ?? 0), 0) * SHIFTS.length;
             const dPct       = dRequired > 0 ? Math.round((dAssigned / dRequired) * 100) : 0;
             const dFull      = dPct >= 100 && dRequired > 0;
             return (
@@ -458,20 +872,77 @@ export default function ShiftAssignment({ onBack } = {}) {
             </div>
           )}
 
-          <ShiftBoard
-            key={activeDept}
-            lines={lines}
-            deptId={activeDept}
-            quotaOverrides={quotaOverrides}
-            getAssignedEmployees={getAssignedEmployees}
-            getDeptShiftTotal={getDeptShiftTotal}
-            getDeptShiftRequired={(deptLines) =>
-              deptLines.reduce((s, l) => s + l.skus.reduce((s2, sk) => s2 + (quotaOverrides[sk.id] ?? sk.quota), 0), 0)
-            }
-            isDragging={!!dragEmpId}
-            onDrop={handleDrop}
-            onRemove={handleRemove}
-          />
+          <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            {dbScheduleLoading ? (
+              <div style={{
+                flex: 1,
+                minHeight: '260px',
+                border: '1.5px solid #e2e8f0',
+                borderRadius: '14px',
+                background: '#fff',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: '#64748b',
+                fontFamily: "'DM Sans',sans-serif",
+                fontSize: '0.85rem',
+              }}>
+                Loading schedule from database...
+              </div>
+            ) : !dbScheduleError && hasAvailableSchedule ? (
+              <ShiftBoard
+                key={activeDept}
+                lines={filteredLines}
+                deptId={activeDept}
+                deptLabel={plantCfg.depts.find(d => d.id === activeDept)?.label ?? ''}
+                deptAccentColor={plantCfg.depts.find(d => d.id === activeDept)?.color ?? (activePlant === 'dressings' ? '#0057B8' : '#b45309')}
+                scheduleByLineId={scheduleByLineId}
+                lineManpowerOverrides={lineManpowerOverrides}
+                getAssignedEmployees={getAssignedEmployees}
+                getDeptShiftTotal={getDeptShiftTotal}
+                isDragging={!!dragEmpId}
+                onDrop={handleDrop}
+                onRemove={handleRemove}
+              />
+            ) : (
+              <div style={{
+                flex: 1,
+                minHeight: '260px',
+                border: '1.5px solid #e2e8f0',
+                borderRadius: '14px',
+                background: '#fff',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '8px',
+                padding: '20px',
+                textAlign: 'center',
+              }}>
+                <div style={{
+                  fontFamily: "'Barlow Condensed',sans-serif",
+                  fontSize: '1.25rem',
+                  fontWeight: 700,
+                  color: '#0f172a',
+                  letterSpacing: '0.03em',
+                }}>
+                  {dbScheduleError ? 'Schedule Fetch Failed' : 'No Available Schedule'}
+                </div>
+                <div style={{
+                  fontFamily: "'DM Mono',monospace",
+                  fontSize: '0.6rem',
+                  color: '#94a3b8',
+                }}>
+                  {activePlant.toUpperCase()} · {currentDate} · SHIFT {curShift}
+                </div>
+                {dbScheduleError && (
+                  <div style={{ fontFamily: "'DM Sans',sans-serif", fontSize: '0.72rem', color: '#dc2626' }}>
+                    {dbScheduleError}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
 
           <div className="excess-aside">
             <ExcessPanel

@@ -1,113 +1,13 @@
 import { useState, useCallback, useRef } from 'react';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// FORMAT NORMALISER
-//
-// Both files share the same outer shape:  { flat: [...], ... }
-// But the records inside flat differ between Savoury and Dressings exports.
-//
-// Savoury (Wk13) flat record shape:
-//   { section, machine, sku_code, description, variant,
-//     total_cs, batches, date, day_name, shift (int), shift_label, qty_cs }
-//
-// Dressings (Wk14) flat record shape:
-//   { machine, date, day_name, shift ("1st"|"2nd"|"3rd"),
-//     size, sku, qty }
-//
-// normaliseFlat() converts both into one unified shape:
-//   {
-//     section    : string   — department/area (e.g. "CUBES", "DRESSINGS")
-//     machine    : string   — line/machine name
-//     sku        : string   — SKU label (sku_code or sku)
-//     description: string   — product description or size label
-//     date       : string   — "YYYY-MM-DD"
-//     day_name   : string   — "MON" / "TUE" … (uppercased)
-//     shift      : number   — 1 | 2 | 3
-//     qty        : number   — cases/units for that shift
-//   }
-// ─────────────────────────────────────────────────────────────────────────────
-
-function parseShift(raw) {
-  // Accepts: 1, 2, 3  OR  "1st", "2nd", "3rd"  OR  "1ST", "2ND", "3RD"
-  if (typeof raw === 'number') return raw;
-  const s = String(raw).toLowerCase().trim();
-  if (s.startsWith('1')) return 1;
-  if (s.startsWith('2')) return 2;
-  if (s.startsWith('3')) return 3;
-  return 0;
-}
-
-function detectFormat(record) {
-  // Savoury format has 'sku_code' and numeric 'shift'
-  // Dressings format has 'sku' (short code) and 'size'
-  if (record.sku_code !== undefined) return 'savoury';
-  if (record.sku !== undefined || record.size !== undefined) return 'dressings';
-  return 'unknown';
-}
-
-function normaliseFlat(rawFlat) {
-  return rawFlat.map(r => {
-    const fmt = detectFormat(r);
-    if (fmt === 'savoury') {
-      return {
-        section:     r.section ?? 'SAVOURY',
-        machine:     r.machine ?? '',
-        sku:         r.sku_code ?? '',
-        description: r.description ?? r.variant ?? '',
-        date:        r.date ?? '',
-        day_name:    (r.day_name ?? '').toUpperCase(),
-        shift:       parseShift(r.shift),
-        qty:         r.qty_cs ?? 0,
-        // preserve extras
-        variant:     r.variant ?? '',
-        total_cs:    r.total_cs ?? null,
-        batches:     r.batches ?? null,
-      };
-    }
-    if (fmt === 'dressings') {
-      return {
-        section:     'DRESSINGS',
-        machine:     r.machine ?? '',
-        sku:         r.sku ?? '',
-        description: r.size ? `Size ${r.size}` : '',
-        date:        r.date ?? '',
-        day_name:    (r.day_name ?? '').toUpperCase().slice(0, 3),
-        shift:       parseShift(r.shift),
-        qty:         r.qty ?? 0,
-        // extras
-        variant:     '',
-        total_cs:    null,
-        batches:     null,
-      };
-    }
-    // Unknown — pass through with best-guess mapping
-    return {
-      section:     r.section ?? 'UNKNOWN',
-      machine:     r.machine ?? '',
-      sku:         r.sku_code ?? r.sku ?? '',
-      description: r.description ?? r.size ?? '',
-      date:        r.date ?? '',
-      day_name:    (r.day_name ?? '').toUpperCase().slice(0, 3),
-      shift:       parseShift(r.shift ?? r.shift_label ?? 1),
-      qty:         r.qty_cs ?? r.qty ?? 0,
-      variant:     '',
-      total_cs:    null,
-      batches:     null,
-    };
-  });
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 
 const DAYS = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
 
-const INITIAL_LOG = [
-  { id: 1, filename: 'schedule-output-wk13.json', uploadedAt: '2026-03-21 08:12', uploadedBy: 'admin', rows: 272, status: 'Applied', format: 'Savoury' },
-  { id: 2, filename: 'schedule-output-wk12.json', uploadedAt: '2026-03-14 07:55', uploadedBy: 'admin', rows: 104, status: 'Applied', format: 'Dressings' },
-];
+const INITIAL_LOG = [];
 
 // ── Upload zone ────────────────────────────────────────────────────────────────
-function UploadZone({ onFile, isDragging, setIsDragging }) {
+function UploadZone({ onFile, isDragging, setIsDragging, disabled = false }) {
   const inputRef = useRef();
   const handleDrop = useCallback(e => {
     e.preventDefault(); setIsDragging(false);
@@ -116,19 +16,19 @@ function UploadZone({ onFile, isDragging, setIsDragging }) {
   }, [onFile, setIsDragging]);
   return (
     <div
-      onDragOver={e => { e.preventDefault(); setIsDragging(true); }}
+      onDragOver={e => { if (!disabled) { e.preventDefault(); setIsDragging(true); } }}
       onDragLeave={() => setIsDragging(false)}
-      onDrop={handleDrop}
-      onClick={() => inputRef.current.click()}
-      style={{ border: `2px dashed ${isDragging ? '#0057B8' : '#cbd5e1'}`, borderRadius: '14px', padding: '48px 24px', textAlign: 'center', cursor: 'pointer', background: isDragging ? '#eff6ff' : '#f8fafc', transition: 'all 0.2s' }}
+      onDrop={e => { if (!disabled) handleDrop(e); }}
+      onClick={() => !disabled && inputRef.current.click()}
+      style={{ border: `2px dashed ${isDragging ? '#0057B8' : '#cbd5e1'}`, borderRadius: '14px', padding: '48px 24px', textAlign: 'center', cursor: disabled ? 'not-allowed' : 'pointer', background: isDragging ? '#eff6ff' : '#f8fafc', transition: 'all 0.2s', opacity: disabled ? 0.6 : 1 }}
     >
-      <input ref={inputRef} type="file" accept=".json" style={{ display: 'none' }} onChange={e => { if (e.target.files[0]) onFile(e.target.files[0]); }} />
+      <input ref={inputRef} type="file" accept=".xlsx,.xls" style={{ display: 'none' }} disabled={disabled} onChange={e => { if (e.target.files[0]) onFile(e.target.files[0]); }} />
       <div style={{ fontSize: '2.5rem', marginBottom: '12px' }}>📋</div>
-      <div style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: '1.3rem', fontWeight: 700, color: '#0f172a', marginBottom: '6px' }}>Drop your schedule JSON here</div>
+      <div style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: '1.3rem', fontWeight: 700, color: '#0f172a', marginBottom: '6px' }}>Drop your schedule Excel file here</div>
       <div style={{ fontFamily: "'DM Sans',sans-serif", fontSize: '0.78rem', color: '#64748b', marginBottom: '16px' }}>
-        Supports both <strong>Savoury</strong> and <strong>Dressings</strong> export formats — auto-detected
+        Supports both <strong>Savoury</strong> and <strong>Dressings</strong> excel formats — auto-detected
       </div>
-      <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '8px 20px', borderRadius: '8px', background: '#0057B8', color: '#fff', fontFamily: "'DM Sans',sans-serif", fontSize: '0.78rem', fontWeight: 700 }}>
+      <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '8px 20px', borderRadius: '8px', background: disabled ? '#94a3b8' : '#0057B8', color: '#fff', fontFamily: "'DM Sans',sans-serif", fontSize: '0.78rem', fontWeight: 700 }}>
         <span>📂</span> Browse File
       </div>
     </div>
@@ -152,16 +52,20 @@ function FormatBadge({ format }) {
   );
 }
 
+function filterScheduleRecords(records, search) {
+  if (!search) return records;
+  const q = search.toLowerCase();
+  return records.filter(r =>
+    r.machine.toLowerCase().includes(q) ||
+    r.sku.toLowerCase().includes(q) ||
+    r.description.toLowerCase().includes(q) ||
+    r.section.toLowerCase().includes(q),
+  );
+}
+
 // ── Schedule table ─────────────────────────────────────────────────────────────
 function ScheduleTable({ records, search }) {
-  const filtered = search
-    ? records.filter(r =>
-        r.machine.toLowerCase().includes(search.toLowerCase()) ||
-        r.sku.toLowerCase().includes(search.toLowerCase()) ||
-        r.description.toLowerCase().includes(search.toLowerCase()) ||
-        r.section.toLowerCase().includes(search.toLowerCase())
-      )
-    : records;
+  const filtered = filterScheduleRecords(records, search);
 
   // Group by date for summary
   const dates = [...new Set(records.map(r => r.date))].sort();
@@ -232,46 +136,135 @@ function ScheduleTable({ records, search }) {
   );
 }
 
+function CalendarPreview({ records, search }) {
+  const filtered = filterScheduleRecords(records, search);
+  const sortedDates = [...new Set(filtered.map(r => r.date))].sort();
+  const shifts = [1, 2, 3];
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+      {sortedDates.length === 0 && (
+        <div style={{ padding: '30px', textAlign: 'center', color: '#94a3b8', border: '1.5px solid #e2e8f0', borderRadius: '10px', background: '#fff' }}>
+          No records match your search
+        </div>
+      )}
+
+      {sortedDates.map((date) => {
+        const rowsOnDate = filtered.filter(r => r.date === date);
+        const dayName = rowsOnDate[0]?.day_name?.slice(0, 3) || '--';
+        const totalQty = rowsOnDate.reduce((s, r) => s + (Number(r.qty) || 0), 0);
+
+        return (
+          <div key={date} style={{ border: '1.5px solid #e2e8f0', borderRadius: '12px', background: '#fff', overflow: 'hidden' }}>
+            <div style={{ padding: '10px 12px', background: '#f8fafc', borderBottom: '1px solid #e2e8f0', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div>
+                <div style={{ fontFamily: "'Barlow Condensed',sans-serif", fontWeight: 800, fontSize: '1rem', color: '#0f172a' }}>{dayName} · {date}</div>
+                <div style={{ fontFamily: "'DM Mono',monospace", fontSize: '0.52rem', color: '#94a3b8' }}>{rowsOnDate.length} rows</div>
+              </div>
+              <div style={{ fontFamily: "'DM Mono',monospace", fontSize: '0.58rem', fontWeight: 700, color: '#0f172a' }}>
+                Total {totalQty.toLocaleString()} cs
+              </div>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: '0', borderTop: '0' }}>
+              {shifts.map((shift) => {
+                const rows = rowsOnDate.filter(r => Number(r.shift) === shift);
+                const shiftQty = rows.reduce((s, r) => s + (Number(r.qty) || 0), 0);
+                const shiftColor = shift === 1 ? '#1d4ed8' : shift === 2 ? '#92400e' : '#5b21b6';
+                const shiftBg = shift === 1 ? '#eff6ff' : shift === 2 ? '#fffbeb' : '#f5f3ff';
+
+                return (
+                  <div key={shift} style={{ borderLeft: shift === 1 ? 'none' : '1px solid #e2e8f0', minHeight: '160px' }}>
+                    <div style={{ padding: '8px 10px', borderBottom: '1px solid #f1f5f9', background: shiftBg, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ fontFamily: "'DM Mono',monospace", fontSize: '0.55rem', fontWeight: 700, color: shiftColor }}>
+                        SHIFT {shift}
+                      </span>
+                      <span style={{ fontFamily: "'DM Mono',monospace", fontSize: '0.52rem', color: shiftColor }}>
+                        {shiftQty.toLocaleString()} cs
+                      </span>
+                    </div>
+                    <div style={{ padding: '8px', display: 'flex', flexDirection: 'column', gap: '6px', maxHeight: '260px', overflowY: 'auto' }}>
+                      {rows.length === 0 && (
+                        <div style={{ fontFamily: "'DM Sans',sans-serif", fontSize: '0.68rem', color: '#94a3b8' }}>No plan</div>
+                      )}
+                      {rows.map((r, idx) => (
+                        <div key={`${r.machine}-${r.sku}-${idx}`} style={{ border: '1px solid #e2e8f0', borderRadius: '8px', padding: '6px 8px', background: '#fff' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', gap: '6px' }}>
+                            <span style={{ fontFamily: "'DM Sans',sans-serif", fontSize: '0.7rem', fontWeight: 700, color: '#0f172a', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                              {r.machine}
+                            </span>
+                            <span style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: '0.95rem', fontWeight: 800, color: '#0f172a' }}>
+                              {Number(r.qty || 0).toLocaleString()}
+                            </span>
+                          </div>
+                          <div style={{ marginTop: '2px', fontFamily: "'DM Mono',monospace", fontSize: '0.5rem', color: '#64748b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                            {r.sku} · {r.section}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ── Main AdminPage ─────────────────────────────────────────────────────────────
 export default function AdminPage({ onBack, onGoAnalytics, onGoSettings, displayName }) {
   const [tab, setTab]             = useState('schedule');
   const [file, setFile]           = useState(null);
-  const [rawFlat, setRawFlat]     = useState(null);   // raw from JSON
-  const [schedule, setSchedule]   = useState(null);   // normalised
+  const [rawFlat, setRawFlat]     = useState(null);   // raw rows from preview
+  const [schedule, setSchedule]   = useState(null);   // normalised by backend
   const [detectedFormat, setDetectedFormat] = useState('unknown');
   const [parseError, setParseError] = useState(null);
   const [isDragging, setIsDragging] = useState(false);
   const [applyState, setApplyState] = useState('idle');
   const [auditLog, setAuditLog]   = useState(INITIAL_LOG);
   const [search, setSearch]       = useState('');
+  const [previewSheet, setPreviewSheet] = useState('');
+  const [previewState, setPreviewState] = useState('idle'); // idle | parsing | done
+  const [previewView, setPreviewView] = useState('calendar'); // calendar | table
 
   // ── Handle file ──────────────────────────────────────────────────────────────
   const handleFile = useCallback(async (f) => {
     setFile(f);
     setApplyState('idle');
     setParseError(null);
+    setApplyError(null);
+    setPreviewState('parsing');
 
     try {
-      const text = await f.text();
-      const json = JSON.parse(text);
+      const fd = new FormData();
+      fd.append('file', f);
+      const res = await fetch('/api/v1/upload/preview-excel', {
+        method: 'POST',
+        body: fd,
+      });
+      if (!res.ok) {
+        const errText = await res.text().catch(() => '');
+        throw new Error(`Failed to preview excel (${res.status})${errText ? `: ${errText}` : ''}`);
+      }
+      const body = await res.json();
+      const data = body?.data ?? {};
+      const rows = Array.isArray(data.rows) ? data.rows : [];
+      if (!rows.length) throw new Error('No valid rows found in the uploaded worksheet.');
 
-      // Support both { flat: [...] } and a bare array
-      const rawArr = Array.isArray(json) ? json : (json.flat ?? []);
-
-      if (!rawArr.length) throw new Error('No records found in the "flat" array.');
-
-      // Detect format from first record
-      const fmt = detectFormat(rawArr[0]);
-      const fmts = [...new Set(rawArr.map(detectFormat))];
-      const finalFmt = fmts.length > 1 ? 'mixed' : fmt;
-      console.log(rawArr);
-      setRawFlat(rawArr);
-      setDetectedFormat(finalFmt);
-      setSchedule(normaliseFlat(rawArr));
+      setRawFlat(rows);
+      setDetectedFormat(data.detectedFormat ?? 'unknown');
+      setSchedule(rows);
+      setPreviewSheet(data.sheet ?? '');
+      setPreviewState('done');
     } catch (err) {
       setParseError(err.message);
       setSchedule(null);
       setRawFlat(null);
+      setPreviewSheet('');
+      setPreviewState('idle');
     }
   }, []);
 
@@ -288,7 +281,7 @@ export default function AdminPage({ onBack, onGoAnalytics, onGoSettings, display
       format:      detectedFormat,
       records:     schedule,   // normalised unified array
     };
-    console.log(payload);
+
     try {
       const res = await fetch('/api/v1/upload', {
         method:  'POST',
@@ -301,17 +294,16 @@ export default function AdminPage({ onBack, onGoAnalytics, onGoSettings, display
         throw new Error(`Server responded ${res.status}: ${errText}`);
       }
 
-      // Server should return: { id, saved_rows, uploaded_at }
       const data = await res.json();
 
       setApplyState('done');
       setAuditLog(prev => [{
-        id:         data.id ?? prev.length + 1,
+        id:         data?.data?.id ?? prev.length + 1,
         filename:   file?.name ?? 'upload',
-        uploadedAt: data.uploaded_at
+        uploadedAt: data?.data?.uploaded_at
           ?? new Date().toLocaleString('en-GB', { day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit' }).replace(',', ''),
         uploadedBy: displayName,
-        rows:       data.saved_rows ?? schedule?.length ?? 0,
+        rows:       data?.data?.saved_rows ?? schedule?.length ?? 0,
         status:     'Applied',
         format:     detectedFormat.charAt(0).toUpperCase() + detectedFormat.slice(1),
       }, ...prev]);
@@ -325,6 +317,11 @@ export default function AdminPage({ onBack, onGoAnalytics, onGoSettings, display
 
   // ── Unique sections in the loaded file ──────────────────────────────────────
   const sections = schedule ? [...new Set(schedule.map(r => r.section))] : [];
+  const uniqueMachines = schedule ? [...new Set(schedule.map(r => r.machine))] : [];
+  const uniqueSkus = schedule ? [...new Set(schedule.map(r => r.sku))] : [];
+  const invalidRows = schedule ? schedule.filter(r => !r.date || !r.machine || !r.shift || r.qty <= 0).length : 0;
+  const totalQty = schedule ? schedule.reduce((s, r) => s + r.qty, 0) : 0;
+  const hasWarnings = invalidRows > 0;
 
   return (
     <>
@@ -396,10 +393,18 @@ export default function AdminPage({ onBack, onGoAnalytics, onGoSettings, display
           {/* ── Schedule tab ── */}
           {tab === 'schedule' && (
             <div style={{ background: '#fff', border: '1.5px solid #e2e8f0', borderTop: 'none', borderRadius: '0 0 14px 14px', padding: '24px' }}>
+              {(previewState === 'parsing' || applyState === 'applying') && (
+                <div style={{ position: 'sticky', top: '72px', zIndex: 30, marginBottom: '14px', padding: '10px 14px', borderRadius: '10px', border: '1px solid #bfdbfe', background: 'linear-gradient(90deg,#eff6ff,#f8fafc)', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <span style={{ width: '16px', height: '16px', border: '2px solid #93c5fd', borderTopColor: '#1d4ed8', borderRadius: '50%', display: 'inline-block', animation: 'spin 0.7s linear infinite' }} />
+                  <span style={{ fontFamily: "'DM Sans',sans-serif", fontSize: '0.76rem', color: '#1e3a8a', fontWeight: 700 }}>
+                    {previewState === 'parsing' ? 'Uploading and parsing Excel preview...' : 'Saving schedule to database...'}
+                  </span>
+                </div>
+              )}
 
               {!schedule && !parseError && (
                 <>
-                  <UploadZone onFile={handleFile} isDragging={isDragging} setIsDragging={setIsDragging} />
+                  <UploadZone onFile={handleFile} isDragging={isDragging} setIsDragging={setIsDragging} disabled={previewState === 'parsing' || applyState === 'applying'} />
 
                   {/* Format guide */}
                   <div style={{ marginTop: '20px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
@@ -427,7 +432,7 @@ export default function AdminPage({ onBack, onGoAnalytics, onGoSettings, display
                     ))}
                   </div>
                   <div style={{ marginTop: '12px', fontFamily: "'DM Sans',sans-serif", fontSize: '0.68rem', color: '#94a3b8', textAlign: 'center' }}>
-                    Both formats are auto-detected and normalised to a unified schema on upload.
+                    Excel is parsed server-side, auto-detected, and normalised before you apply it.
                   </div>
                 </>
               )}
@@ -444,6 +449,26 @@ export default function AdminPage({ onBack, onGoAnalytics, onGoSettings, display
               {/* Loaded schedule */}
               {schedule && (
                 <>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(120px,1fr))', gap: '10px', marginBottom: '14px' }}>
+                    {[
+                      { k: 'rows', label: 'Rows Parsed', value: schedule.length.toLocaleString(), color: '#0369a1', bg: '#e0f2fe' },
+                      { k: 'machines', label: 'Machines', value: uniqueMachines.length, color: '#166534', bg: '#dcfce7' },
+                      { k: 'skus', label: 'SKUs', value: uniqueSkus.length, color: '#7c2d12', bg: '#ffedd5' },
+                      { k: 'qty', label: 'Total Qty', value: totalQty.toLocaleString(), color: '#5b21b6', bg: '#ede9fe' },
+                    ].map(card => (
+                      <div key={card.k} style={{ background: '#fff', border: '1.5px solid #e2e8f0', borderRadius: '10px', padding: '10px 12px' }}>
+                        <div style={{ fontFamily: "'DM Mono',monospace", fontSize: '0.5rem', color: '#94a3b8', textTransform: 'uppercase' }}>{card.label}</div>
+                        <div style={{ marginTop: '4px', display: 'inline-flex', padding: '2px 8px', borderRadius: '99px', background: card.bg, color: card.color, fontFamily: "'Barlow Condensed',sans-serif", fontWeight: 800, fontSize: '1rem' }}>{card.value}</div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div style={{ padding: '10px 14px', background: hasWarnings ? '#fffbeb' : '#f0fdf4', border: `1px solid ${hasWarnings ? '#fde68a' : '#86efac'}`, borderRadius: '8px', marginBottom: '12px', fontFamily: "'DM Sans',sans-serif", fontSize: '0.68rem', color: hasWarnings ? '#92400e' : '#15803d' }}>
+                    {hasWarnings
+                      ? `⚠ ${invalidRows} row(s) look incomplete/invalid and should be checked before Apply.`
+                      : '✓ Quick validation passed: all preview rows have date, machine, shift and qty > 0.'}
+                  </div>
+
                   {/* File info bar */}
                   <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '20px', padding: '12px 16px', background: '#f8fafc', borderRadius: '10px', border: '1.5px solid #e2e8f0' }}>
                     <span style={{ fontSize: '1.4rem' }}>📊</span>
@@ -451,6 +476,11 @@ export default function AdminPage({ onBack, onGoAnalytics, onGoSettings, display
                       <div style={{ fontFamily: "'DM Sans',sans-serif", fontSize: '0.85rem', fontWeight: 700, color: '#0f172a' }}>{file?.name}</div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '4px', flexWrap: 'wrap' }}>
                         <span style={{ fontFamily: "'DM Mono',monospace", fontSize: '0.55rem', color: '#94a3b8' }}>{schedule.length} records · {[...new Set(schedule.map(r => r.date))].length} days · 3 shifts</span>
+                        {previewSheet && (
+                          <span style={{ fontFamily: "'DM Mono',monospace", fontSize: '0.5rem', fontWeight: 700, padding: '1px 7px', borderRadius: '99px', background: '#f1f5f9', color: '#334155', border: '1px solid #cbd5e1' }}>
+                            Sheet: {previewSheet}
+                          </span>
+                        )}
                         <FormatBadge format={detectedFormat} />
                         {sections.map(s => (
                           <span key={s} style={{ fontFamily: "'DM Mono',monospace", fontSize: '0.5rem', fontWeight: 700, padding: '1px 7px', borderRadius: '99px', background: s === 'DRESSINGS' ? '#eff6ff' : '#fffbeb', color: s === 'DRESSINGS' ? '#1d4ed8' : '#92400e', border: `1px solid ${s === 'DRESSINGS' ? '#bfdbfe' : '#fde68a'}` }}>{s}</span>
@@ -464,14 +494,14 @@ export default function AdminPage({ onBack, onGoAnalytics, onGoSettings, display
                         <span style={{ fontFamily: "'DM Sans',sans-serif", fontSize: '0.75rem', fontWeight: 700, color: '#15803d' }}>Applied</span>
                       </div>
                     ) : (
-                      <button onClick={handleApply} disabled={applyState === 'applying'} style={{ display: 'flex', alignItems: 'center', gap: '7px', padding: '8px 18px', borderRadius: '8px', background: 'linear-gradient(135deg,#0057B8,#0ea5e9)', border: 'none', color: '#fff', cursor: 'pointer', fontFamily: "'DM Sans',sans-serif", fontSize: '0.78rem', fontWeight: 700, opacity: applyState === 'applying' ? 0.7 : 1 }}>
+                      <button onClick={handleApply} disabled={applyState === 'applying' || previewState === 'parsing'} style={{ display: 'flex', alignItems: 'center', gap: '7px', padding: '8px 18px', borderRadius: '8px', background: 'linear-gradient(135deg,#0057B8,#0ea5e9)', border: 'none', color: '#fff', cursor: 'pointer', fontFamily: "'DM Sans',sans-serif", fontSize: '0.78rem', fontWeight: 700, opacity: applyState === 'applying' ? 0.7 : 1 }}>
                         {applyState === 'applying'
                           ? <><span style={{ width: '14px', height: '14px', border: '2px solid rgba(255,255,255,0.3)', borderTopColor: '#fff', borderRadius: '50%', display: 'inline-block', animation: 'spin 0.7s linear infinite' }}/> Applying…</>
                           : '✅ Apply Schedule'}
                       </button>
                     )}
 
-                    <button onClick={() => { setFile(null); setSchedule(null); setRawFlat(null); setApplyState('idle'); setParseError(null); }} style={{ background: 'none', border: '1.5px solid #e2e8f0', borderRadius: '8px', padding: '8px 14px', cursor: 'pointer', fontFamily: "'DM Mono',monospace", fontSize: '0.62rem', color: '#94a3b8' }}>↩ Replace</button>
+                    <button onClick={() => { setFile(null); setSchedule(null); setRawFlat(null); setApplyState('idle'); setParseError(null); setPreviewSheet(''); setPreviewState('idle'); }} style={{ background: 'none', border: '1.5px solid #e2e8f0', borderRadius: '8px', padding: '8px 14px', cursor: 'pointer', fontFamily: "'DM Mono',monospace", fontSize: '0.62rem', color: '#94a3b8' }}>↩ Replace</button>
                   </div>
 
                   {/* Apply error */}
@@ -491,13 +521,53 @@ export default function AdminPage({ onBack, onGoAnalytics, onGoSettings, display
                   </div>
 
                   {/* Search */}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '7px 12px', borderRadius: '8px', border: '1.5px solid #e2e8f0', background: '#fff', marginBottom: '14px', maxWidth: '340px' }}>
-                    <span style={{ opacity: 0.4 }}>🔍</span>
-                    <input type="text" placeholder="Filter by machine, SKU, section…" value={search} onChange={e => setSearch(e.target.value)} style={{ flex: 1, border: 'none', outline: 'none', fontFamily: "'DM Sans',sans-serif", fontSize: '0.75rem', color: '#0f172a', background: 'transparent' }} />
-                    {search && <button onClick={() => setSearch('')} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#94a3b8', padding: 0 }}>✕</button>}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '14px', flexWrap: 'wrap' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '7px 12px', borderRadius: '8px', border: '1.5px solid #e2e8f0', background: '#fff', maxWidth: '340px', flex: '1 1 320px' }}>
+                      <span style={{ opacity: 0.4 }}>🔍</span>
+                      <input type="text" placeholder="Filter by machine, SKU, section…" value={search} onChange={e => setSearch(e.target.value)} style={{ flex: 1, border: 'none', outline: 'none', fontFamily: "'DM Sans',sans-serif", fontSize: '0.75rem', color: '#0f172a', background: 'transparent' }} />
+                      {search && <button onClick={() => setSearch('')} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#94a3b8', padding: 0 }}>✕</button>}
+                    </div>
+
+                    <div style={{ display: 'inline-flex', border: '1.5px solid #e2e8f0', borderRadius: '8px', overflow: 'hidden', background: '#fff' }}>
+                      <button
+                        onClick={() => setPreviewView('calendar')}
+                        style={{
+                          border: 'none',
+                          padding: '7px 12px',
+                          cursor: 'pointer',
+                          background: previewView === 'calendar' ? '#eff6ff' : '#fff',
+                          color: previewView === 'calendar' ? '#1d4ed8' : '#64748b',
+                          fontFamily: "'DM Mono',monospace",
+                          fontSize: '0.62rem',
+                          fontWeight: 700,
+                        }}
+                      >
+                        Calendar View
+                      </button>
+                      <button
+                        onClick={() => setPreviewView('table')}
+                        style={{
+                          border: 'none',
+                          borderLeft: '1px solid #e2e8f0',
+                          padding: '7px 12px',
+                          cursor: 'pointer',
+                          background: previewView === 'table' ? '#eff6ff' : '#fff',
+                          color: previewView === 'table' ? '#1d4ed8' : '#64748b',
+                          fontFamily: "'DM Mono',monospace",
+                          fontSize: '0.62rem',
+                          fontWeight: 700,
+                        }}
+                      >
+                        Table View
+                      </button>
+                    </div>
                   </div>
 
-                  <ScheduleTable records={schedule} search={search} />
+                  {previewView === 'calendar' ? (
+                    <CalendarPreview records={schedule} search={search} />
+                  ) : (
+                    <ScheduleTable records={schedule} search={search} />
+                  )}
                 </>
               )}
             </div>

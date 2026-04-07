@@ -1,16 +1,8 @@
 import { useState, useMemo } from 'react';
-import {
-  DRESSINGS_DEPARTMENTS, SAVOURY_DEPARTMENTS,
-  DRESSINGS_LINES_BY_DEPT, SAVOURY_LINES_BY_DEPT,
-  PLANTS,
-} from '../data/lineData';
 
-const ALL_DEPTS = [...DRESSINGS_DEPARTMENTS, ...SAVOURY_DEPARTMENTS];
-
-function getAllLinesByDept(deptId) {
-  return DRESSINGS_LINES_BY_DEPT[deptId]
-    ?? SAVOURY_LINES_BY_DEPT[deptId]
-    ?? [];
+function getLinesForPlantDept(activePlant, deptId, dressingsLayout, savouryLayout) {
+  const lay = activePlant === 'dressings' ? dressingsLayout : savouryLayout;
+  return lay?.linesByDept?.[deptId] ?? [];
 }
 
 // ── Small number input ─────────────────────────────────────────────────────────
@@ -32,8 +24,8 @@ function QuotaInput({ value, onChange }) {
       >−</button>
 
       <input
-        type="number" min={0} max={99} value={value}
-        onChange={e => onChange(Math.max(0, Math.min(99, Number(e.target.value) || 0)))}
+        type="number" min={0} max={999} value={value}
+        onChange={e => onChange(Math.max(0, Math.min(999, Number(e.target.value) || 0)))}
         style={{
           width: '44px', height: '28px', textAlign: 'center',
           border: '1.5px solid #e2e8f0', borderRadius: '8px',
@@ -48,7 +40,7 @@ function QuotaInput({ value, onChange }) {
       />
 
       <button
-        onClick={() => onChange(Math.min(99, value + 1))}
+        onClick={() => onChange(Math.min(999, value + 1))}
         style={{
           width: '22px', height: '22px', borderRadius: '6px',
           border: '1.5px solid #e2e8f0', background: '#f8fafc',
@@ -65,9 +57,10 @@ function QuotaInput({ value, onChange }) {
 }
 
 // ── Line section (collapsible) ─────────────────────────────────────────────────
-function LineSection({ line, quotas, onQuotaChange, deptColor, isProcess }) {
+function LineSection({ line, deptColor, lineQuota, defaultQuota, onLineQuotaChange }) {
   const [open, setOpen] = useState(true);
-  const totalQuota = line.skus.reduce((s, sk) => s + (quotas[sk.id] ?? sk.quota), 0);
+  const current = lineQuota ?? defaultQuota ?? 0;
+  const changed = lineQuota != null && defaultQuota != null && lineQuota !== defaultQuota;
 
   return (
     <div style={{
@@ -112,7 +105,7 @@ function LineSection({ line, quotas, onQuotaChange, deptColor, isProcess }) {
           fontFamily: "'DM Mono',monospace", fontSize: '0.55rem', fontWeight: 700,
           color: deptColor,
         }}>
-          {totalQuota} req/shift
+          {current} req/shift
         </div>
 
         <span style={{
@@ -122,55 +115,16 @@ function LineSection({ line, quotas, onQuotaChange, deptColor, isProcess }) {
         }}>▾</span>
       </div>
 
-      {/* SKU rows */}
       {open && (
-        <div style={{ padding: '8px 14px 12px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-          {line.skus.map((sku, i) => {
-            const current = quotas[sku.id] ?? sku.quota;
-            const changed = current !== sku.quota;
-            return (
-              <div key={sku.id} style={{
-                display: 'flex', alignItems: 'center', gap: '10px',
-                padding: '8px 10px', borderRadius: '8px',
-                background: changed ? '#eff6ff' : '#fafbfc',
-                border: `1px solid ${changed ? '#bfdbfe' : '#f1f5f9'}`,
-                animation: `fadeUp 0.25s ${i * 0.04}s both`,
-                transition: 'background 0.2s, border-color 0.2s',
-              }}>
-                {/* SKU label */}
-                {!isProcess && (
-                  <span style={{
-                    fontFamily: "'DM Mono',monospace", fontSize: '0.68rem', fontWeight: 700,
-                    color: deptColor, background: deptColor + '12',
-                    border: `1px solid ${deptColor}30`,
-                    borderRadius: '6px', padding: '2px 8px',
-                    whiteSpace: 'nowrap', flexShrink: 0,
-                  }}>{sku.label}</span>
-                )}
-                {sku.remark && (
-                  <span style={{
-                    fontFamily: "'DM Sans',sans-serif", fontSize: '0.58rem',
-                    color: '#64748b', flex: 1,
-                  }}>→ {sku.remark}</span>
-                )}
-                <div style={{ flex: 1 }}/>
-
-                {/* Original value hint */}
-                {changed && (
-                  <span style={{
-                    fontFamily: "'DM Mono',monospace", fontSize: '0.52rem',
-                    color: '#94a3b8',
-                  }}>was {sku.quota}</span>
-                )}
-
-                {/* Quota input */}
-                <QuotaInput
-                  value={current}
-                  onChange={val => onQuotaChange(sku.id, val)}
-                />
-              </div>
-            );
-          })}
+        <div style={{ padding: '10px 14px 14px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          <div style={{ fontFamily: "'DM Mono',monospace", fontSize: '0.52rem', color: '#64748b', lineHeight: 1.35 }}>
+            Default: {defaultQuota ?? 0} req/shift
+            {changed && <span style={{ marginLeft: '8px', color: '#1d4ed8', fontWeight: 700 }}>· modified</span>}
+          </div>
+          <QuotaInput
+            value={current}
+            onChange={val => onLineQuotaChange(line.id, defaultQuota != null && val === defaultQuota ? null : val)}
+          />
         </div>
       )}
     </div>
@@ -178,15 +132,25 @@ function LineSection({ line, quotas, onQuotaChange, deptColor, isProcess }) {
 }
 
 // ── Main Settings Page ─────────────────────────────────────────────────────────
-export default function SettingsPage({ onBack, quotas, onQuotaChange, onResetAll }) {
-  const [activePlant, setActivePlant] = useState('dressings');
+export default function SettingsPage({
+  onBack,
+  lineQuotas,
+  onLineQuotaChange,
+  onResetAll,
+  dressingsLayout = { departments: [], linesByDept: {}, allLines: [] },
+  savouryLayout = { departments: [], linesByDept: {}, allLines: [] },
+  lineTotalsById = {},
+  initialPlant = 'dressings',
+}) {
+  const [activePlant, setActivePlant] = useState(initialPlant);
   const [activeDept,  setActiveDept]  = useState(null);
   const [search,      setSearch]      = useState('');
   const [saved,       setSaved]       = useState(false);
+  const [saveError,   setSaveError]   = useState(null);
 
   const plantsConfig = [
-    { id: 'dressings', label: 'Dressings', icon: '🥗', color: '#0057B8', depts: DRESSINGS_DEPARTMENTS },
-    { id: 'savoury',   label: 'Savoury',   icon: '🧂', color: '#b45309', depts: SAVOURY_DEPARTMENTS },
+    { id: 'dressings', label: 'Dressings', icon: '🥗', color: '#0057B8', depts: dressingsLayout.departments ?? [] },
+    { id: 'savoury',   label: 'Savoury',   icon: '🧂', color: '#b45309', depts: savouryLayout.departments ?? [] },
   ];
 
   const currentPlant = plantsConfig.find(p => p.id === activePlant);
@@ -194,8 +158,8 @@ export default function SettingsPage({ onBack, quotas, onQuotaChange, onResetAll
 
   // Default dept when switching plants
   const effectiveDept = activeDept ?? currentDepts[0]?.id ?? null;
-  const deptObj = ALL_DEPTS.find(d => d.id === effectiveDept);
-  const lines   = getAllLinesByDept(effectiveDept ?? '');
+  const deptObj = currentDepts.find(d => d.id === effectiveDept);
+  const lines   = getLinesForPlantDept(activePlant, effectiveDept ?? '', dressingsLayout, savouryLayout);
 
   // Filter by search
   const filteredLines = useMemo(() => {
@@ -208,12 +172,42 @@ export default function SettingsPage({ onBack, quotas, onQuotaChange, onResetAll
   }, [lines, search]);
 
   // Count total changes
-  const changedCount = Object.keys(quotas).length;
+  const changedCount = Object.keys(lineQuotas ?? {}).length;
 
-  const handleSave = () => {
+  const handleSave = async () => {
+    setSaveError(null);
     setSaved(true);
     setTimeout(() => setSaved(false), 2500);
-    // In production: POST /api/settings/quotas with quotas state
+
+    try {
+      const lay = activePlant === 'dressings' ? dressingsLayout : savouryLayout;
+      const scopeLineIds = lay?.allLines?.map(l => l.id) ?? [];
+      if (!scopeLineIds.length) return;
+
+      const scopeSet = new Set(scopeLineIds);
+      // Persist a row for every machine line in this plant scope.
+      // If the operator didn't change it, we save the schedule-derived default.
+      const items = scopeLineIds.map((lineId) => ({
+        lineId,
+        quota: Number(
+          (lineQuotas?.[lineId] ?? lineTotalsById?.[lineId] ?? 0),
+        ),
+      }));
+
+      const res = await fetch('/api/v1/settings/lines/scope', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scopeLineIds, items }),
+      });
+      if (!res.ok) {
+        const txt = await res.text().catch(() => '');
+        throw new Error(`Failed to save settings (${res.status})${txt ? `: ${txt}` : ''}`);
+      }
+      await res.json().catch(() => {});
+    } catch (err) {
+      setSaved(false);
+      setSaveError(err.message || 'Failed to save settings');
+    }
   };
 
   return (
@@ -322,9 +316,8 @@ export default function SettingsPage({ onBack, quotas, onQuotaChange, onResetAll
             display: 'flex', flexDirection: 'column', gap: '4px',
           }}>
             {currentDepts.map(dept => {
-              const deptLines = getAllLinesByDept(dept.id);
-              const changedInDept = deptLines.reduce((s, l) =>
-                s + l.skus.filter(sk => quotas[sk.id] !== undefined).length, 0);
+              const deptLines = getLinesForPlantDept(activePlant, dept.id, dressingsLayout, savouryLayout);
+              const changedInDept = deptLines.reduce((s, l) => s + (lineQuotas?.[l.id] != null ? 1 : 0), 0);
               const isActive = effectiveDept === dept.id;
               return (
                 <button key={dept.id} onClick={() => setActiveDept(dept.id)} style={{
@@ -375,7 +368,7 @@ export default function SettingsPage({ onBack, quotas, onQuotaChange, onResetAll
                   </span>
                 </div>
                 <div style={{ fontFamily: "'DM Mono',monospace", fontSize: '0.52rem', color: '#94a3b8' }}>
-                  Set the required 3P headcount per SKU per shift
+                  Set the required 3P headcount per line per shift
                 </div>
               </div>
 
@@ -383,7 +376,7 @@ export default function SettingsPage({ onBack, quotas, onQuotaChange, onResetAll
               <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 12px', borderRadius: '10px', border: '1.5px solid #e2e8f0', background: '#fff', minWidth: '180px' }}>
                 <span style={{ fontSize: '0.8rem', opacity: 0.4 }}>🔍</span>
                 <input
-                  type="text" placeholder="Search lines or SKUs…" value={search}
+                  type="text" placeholder="Search lines…" value={search}
                   onChange={e => setSearch(e.target.value)}
                   style={{ flex: 1, border: 'none', background: 'transparent', outline: 'none', fontFamily: "'DM Sans',sans-serif", fontSize: '0.73rem', color: '#111827' }}
                 />
@@ -419,10 +412,10 @@ export default function SettingsPage({ onBack, quotas, onQuotaChange, onResetAll
                 <div key={line.id} style={{ animation: `fadeUp 0.3s ${i * 0.04}s both` }}>
                   <LineSection
                     line={line}
-                    quotas={quotas}
-                    onQuotaChange={onQuotaChange}
+                    lineQuota={lineQuotas?.[line.id]}
+                    defaultQuota={lineTotalsById?.[line.id] ?? line.skus.reduce((s, sk) => s + (Number(sk.quota) || 0), 0)}
                     deptColor={deptObj?.color ?? '#0057B8'}
-                    isProcess={effectiveDept?.includes('process') || effectiveDept?.includes('warehouse')}
+                    onLineQuotaChange={onLineQuotaChange}
                   />
                 </div>
               ))}

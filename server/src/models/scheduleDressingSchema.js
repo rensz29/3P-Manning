@@ -19,7 +19,7 @@ const scheduleDressingSchema = new mongoose.Schema(
         required: true
     },
     date: {
-        type: Date,
+        type: String,
         default: null
     },
     day_name: {

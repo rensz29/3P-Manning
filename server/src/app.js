@@ -10,6 +10,8 @@ const { requestId } = require("./middleware/requestId");
 const usersRouter = require("./routes/users");
 const productsRouter = require("./routes/products");
 const uploadRouter = require("./routes/upload");
+const settingsRouter = require("./routes/settings");
+const assignmentsRouter = require("./routes/assignments");
 
 const app = express();
 
@@ -49,6 +51,8 @@ app.get("/health", (_req, res) => {
 app.use("/api/v1/users", usersRouter);
 app.use("/api/v1/upload", uploadRouter);
 app.use("/api/v1/products", productsRouter);
+app.use("/api/v1/settings", settingsRouter);
+app.use("/api/v1/assignments", assignmentsRouter);
 // ── Error handling (must be last) ─────────────────────────────────────────────
 app.use(notFound);
 app.use(errorHandler);

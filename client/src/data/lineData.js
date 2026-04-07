@@ -26,11 +26,11 @@ export const DRESSINGS_FLEXIBLES = [
   {
     id: 'volpak', label: 'Volpak', dept: 'drs_flexibles',
     skus: [
-      { id: 'vp-100',  label: '100 mL', uom: 'mL', quota: 3 },
-      { id: 'vp-130',  label: '130 mL', uom: 'mL', quota: 3 },
-      { id: 'vp-205',  label: '205 mL', uom: 'mL', quota: 0 },
-      { id: 'vp-220',  label: '220 mL', uom: 'mL', quota: 0 },
-      { id: 'vp-470',  label: '470 mL', uom: 'mL', quota: 3 },
+      // { id: 'vp-100',  label: '100 mL', uom: 'mL', quota: 3 },
+      // { id: 'vp-130',  label: '130 mL', uom: 'mL', quota: 3 },
+      // { id: 'vp-205',  label: '205 mL', uom: 'mL', quota: 0 },
+      // { id: 'vp-220',  label: '220 mL', uom: 'mL', quota: 0 },
+      // { id: 'vp-470',  label: '470 mL', uom: 'mL', quota: 3 },
     ],
   },
   {
@@ -106,10 +106,10 @@ export const DRESSINGS_RIGIDS = [
   {
     id: 'rigids_A', label: '_A', dept: 'drs_rigids',
     skus: [
-      { id: 'ra-1',   label: '1 kg',   uom: 'kg', quota: 3 },
-      { id: 'ra-2.6', label: '2.6 kg', uom: 'kg', quota: 4 },
-      { id: 'ra-3L',  label: '3 L',    uom: 'L',  quota: 3 },
-      { id: 'ra-3.5', label: '3.5 L',  uom: 'L',  quota: 3 },
+      // { id: 'ra-1',   label: '1 kg',   uom: 'kg', quota: 3 },
+      // { id: 'ra-2.6', label: '2.6 kg', uom: 'kg', quota: 4 },
+      // { id: 'ra-3L',  label: '3 L',    uom: 'L',  quota: 3 },
+      // { id: 'ra-3.5', label: '3.5 L',  uom: 'L',  quota: 3 },
     ],
   },
   {

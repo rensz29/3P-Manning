@@ -1,23 +1,13 @@
 import { useState } from 'react';
 import DropZone from './DropZone';
 import { SHIFTS } from '../data/lineData';
-
-const DEPT_COLORS = {
-  // Dressings
-  drs_flexibles: { primary: '#0057B8', light: '#eff6ff', name: 'Flexibles' },
-  drs_rigids:    { primary: '#7c3aed', light: '#f5f3ff', name: 'Rigids' },
-  drs_process:   { primary: '#0f766e', light: '#f0fdfa', name: 'Process' },
-  // Savoury
-  sav_powders:   { primary: '#b45309', light: '#fef3c7', name: 'Powders' },
-  sav_fs:        { primary: '#0891b2', light: '#ecfeff', name: 'FS' },
-  sav_cubes:     { primary: '#7c3aed', light: '#f5f3ff', name: 'Cubes' },
-  sav_process:   { primary: '#0f766e', light: '#f0fdfa', name: 'Process' },
-  sav_warehouse: { primary: '#64748b', light: '#f8fafc', name: 'Warehouse' },
-  // Legacy fallbacks
-  flexibles: { primary: '#0057B8', light: '#eff6ff', name: 'Flexibles' },
-  rigids:    { primary: '#7c3aed', light: '#f5f3ff', name: 'Rigids' },
-  process:   { primary: '#0f766e', light: '#f0fdfa', name: 'Process' },
-};
+import {
+  getEffectiveSkuQuotas,
+  getEffectiveLineTotalQuota,
+  parseVariantManpower,
+  getStaffingLabelFromSchedule,
+  getMatchedScheduleRow,
+} from '../utils/scheduleQuotas';
 
 // ── Shift schedule logic ─────────────────────────────────────────────────────
 function getCurrentShift() {
@@ -152,7 +142,10 @@ function ShiftTabBar({ active, onSelect, getTotal, getRequired, color }) {
 }
 
 // ── Line Sub-Tabs ─────────────────────────────────────────────────────────────
-function LineSubTabs({ lines, activeLine, onSelect, activeShift, getAssignedEmployees, deptColor }) {
+function LineSubTabs({
+  lines, activeLine, onSelect, activeShift, getAssignedEmployees, deptColor,
+  scheduleByLineId, lineManpowerOverrides,
+}) {
   return (
     <div style={{
       display: 'flex', gap: '5px', flexWrap: 'wrap',
@@ -164,8 +157,9 @@ function LineSubTabs({ lines, activeLine, onSelect, activeShift, getAssignedEmpl
     }}>
       {lines.map(line => {
         const isActive  = line.id === activeLine;
+        const rowsForLine = scheduleByLineId[line.id] ?? [];
         const assigned  = line.skus.reduce((s, sk) => s + (getAssignedEmployees(sk.id, activeShift)?.length ?? 0), 0);
-        const required  = line.skus.reduce((s, sk) => s + sk.quota, 0);
+        const required  = getEffectiveLineTotalQuota(line, rowsForLine, lineManpowerOverrides);
         const isFull    = required > 0 && assigned >= required;
         const partial   = assigned > 0 && !isFull;
 
@@ -223,9 +217,19 @@ function LineSubTabs({ lines, activeLine, onSelect, activeShift, getAssignedEmpl
 }
 
 // ── Line Detail Panel ─────────────────────────────────────────────────────────
-function LineDetail({ line, activeShift, isDragging, getAssignedEmployees, onDrop, onRemove, isProcess, deptColor }) {
-  const shiftAssigned = line.skus.reduce((s, sk) => s + (getAssignedEmployees(sk.id, activeShift)?.length ?? 0), 0);
-  const shiftRequired = line.skus.reduce((s, sk) => s + sk.quota, 0);
+function LineDetail({
+  line, activeShift, isDragging, getAssignedEmployees, onDrop, onRemove, isProcess, deptColor,
+  scheduleRows, lineManpowerOverrides,
+}) {
+  const effectiveSkus = getEffectiveSkuQuotas(line, scheduleRows, lineManpowerOverrides);
+  const shiftAssigned = effectiveSkus.reduce(
+    (s, sk) => s + (getAssignedEmployees(sk.id, activeShift)?.length ?? 0),
+    0,
+  );
+  const shiftRequired = effectiveSkus.reduce((s, sk) => s + sk.effectiveQuota, 0);
+  const variantParsed = (scheduleRows ?? []).map(r => parseVariantManpower(r.variant)).filter(n => n != null);
+  const variantTotal  = variantParsed.length ? Math.max(...variantParsed) : null;
+  const usesVariant   = variantTotal != null;
   const pct    = shiftRequired > 0 ? shiftAssigned / shiftRequired : 0;
   const isFull = pct >= 1 && shiftRequired > 0;
   const partial = shiftAssigned > 0 && !isFull;
@@ -280,6 +284,11 @@ function LineDetail({ line, activeShift, isDragging, getAssignedEmployees, onDro
           {!isProcess && (
             <div style={{ fontFamily: "'DM Mono',monospace", fontSize: '0.54rem', color: '#9ca3af', marginTop: '2px' }}>
               {line.skus.length} SKU{line.skus.length !== 1 ? 's' : ''} · {shiftAssigned}/{shiftRequired} staffed
+              {usesVariant && (
+                <span style={{ marginLeft: '6px', color: '#0369a1' }}>
+                  · variant manpower {variantTotal}
+                </span>
+              )}
             </div>
           )}
         </div>
@@ -308,34 +317,54 @@ function LineDetail({ line, activeShift, isDragging, getAssignedEmployees, onDro
 
       {/* SKU rows */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-        {line.skus.map(sku => (
+        {effectiveSkus.map((sku, skuIdx) => {
+          const staffingLabel = getStaffingLabelFromSchedule(line, sku, scheduleRows, skuIdx);
+          const matchedRow = getMatchedScheduleRow(line, sku, scheduleRows, skuIdx);
+          const metaParts = [];
+          if (matchedRow?.description != null && String(matchedRow.description).trim() !== '') {
+            metaParts.push(String(matchedRow.description).trim());
+          }
+          if (matchedRow != null && matchedRow.qty != null && Number.isFinite(Number(matchedRow.qty))) {
+            metaParts.push(`${Number(matchedRow.qty).toLocaleString()} cs`);
+          }
+          if (matchedRow != null && matchedRow.variant != null && String(matchedRow.variant).trim() !== '') {
+            metaParts.push(`var ${String(matchedRow.variant).trim()}`);
+          }
+          const metaLine = metaParts.join(' · ');
+          return (
           <div key={sku.id} style={{
             display: 'grid',
-            gridTemplateColumns: isProcess ? '1fr' : '96px 1fr',
+            gridTemplateColumns: isProcess ? '1fr' : 'minmax(112px, max-content) 1fr',
             gap: '8px', alignItems: 'start',
           }}>
             {!isProcess && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', paddingTop: '6px' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', paddingTop: '6px', maxWidth: '220px' }}>
                 <span style={{
                   fontFamily: "'DM Mono',monospace", fontSize: '0.68rem', fontWeight: 700,
                   color: deptColor, background: deptColor + '12',
                   border: `1px solid ${deptColor}30`,
                   borderRadius: '6px', padding: '2px 8px',
-                  display: 'inline-block', whiteSpace: 'nowrap',
-                }}>{sku.label}</span>
+                  display: 'inline-block', whiteSpace: 'normal', wordBreak: 'break-word',
+                }}>{staffingLabel}</span>
+                {metaLine && (
+                  <span style={{ fontFamily: "'DM Sans',sans-serif", fontSize: '0.52rem', color: '#64748b', lineHeight: 1.35 }}>
+                    {metaLine}
+                  </span>
+                )}
                 <span style={{ fontFamily: "'DM Mono',monospace", fontSize: '0.5rem', color: '#9ca3af' }}>
-                  {sku.quota === 0 ? 'no manpower' : `${sku.quota} req/shift`}
+                  {sku.effectiveQuota === 0 ? 'no manpower' : `${sku.effectiveQuota} req/shift${usesVariant ? ' (from variant)' : ''}`}
                 </span>
               </div>
             )}
             <DropZone
-              skuId={sku.id} shiftId={activeShift} quota={sku.quota}
+              skuId={sku.id} shiftId={activeShift} quota={sku.effectiveQuota}
               assignedEmployees={getAssignedEmployees(sku.id, activeShift)}
               isDragging={isDragging} onDrop={onDrop} onRemove={onRemove}
               deptColor={deptColor}
             />
           </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
@@ -344,27 +373,37 @@ function LineDetail({ line, activeShift, isDragging, getAssignedEmployees, onDro
 // ── Main ShiftBoard Export ────────────────────────────────────────────────────
 export default function ShiftBoard({
   lines, deptId,
+  deptLabel = '',
+  deptAccentColor,
+  scheduleByLineId = {},
+  lineManpowerOverrides = {},
   getAssignedEmployees,
-  getDeptShiftTotal, getDeptShiftRequired,
+  getDeptShiftTotal,
   isDragging, onDrop, onRemove,
 }) {
   const curShift = getCurrentShift();
   const [activeShift, setActiveShift] = useState(curShift);
   const [activeLine,  setActiveLine]  = useState(lines[0]?.id ?? null);
 
-  const dept      = DEPT_COLORS[deptId] ?? DEPT_COLORS.flexibles;
-  const isProcess = deptId === 'process' || deptId === 'drs_process' || deptId === 'sav_process' || deptId === 'sav_warehouse';
+  const primary = deptAccentColor ?? '#0057B8';
+  const dept = { primary, light: `${primary}18`, name: deptLabel || deptId };
+  const dl = (deptLabel || '').toLowerCase();
+  const isProcess = dl.includes('process') || dl.includes('warehouse');
 
   const activeLineObj = lines.find(l => l.id === activeLine) ?? lines[0];
+
+  const getRequiredForLines = () =>
+    lines.reduce(
+      (s, l) => s + getEffectiveLineTotalQuota(l, scheduleByLineId[l.id] ?? [], lineManpowerOverrides),
+      0,
+    );
 
   const handleShiftSelect = (shiftId) => {
     if (!isShiftEnabled(shiftId)) return;
     setActiveShift(shiftId);
     setActiveLine(lines[0]?.id ?? null);
   };
-  console.log(  lines, deptId,
-    getAssignedEmployees,
-    getDeptShiftTotal, getDeptShiftRequired,)
+
   return (
     <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
 
@@ -373,7 +412,7 @@ export default function ShiftBoard({
         active={activeShift}
         onSelect={handleShiftSelect}
         getTotal={sid => getDeptShiftTotal(lines, sid)}
-        getRequired={() => getDeptShiftRequired(lines)}
+        getRequired={getRequiredForLines}
         color={dept.primary}
       />
 
@@ -407,6 +446,8 @@ export default function ShiftBoard({
         activeShift={activeShift}
         getAssignedEmployees={getAssignedEmployees}
         deptColor={dept.primary}
+        scheduleByLineId={scheduleByLineId}
+        lineManpowerOverrides={lineManpowerOverrides}
       />
 
       {/* Line Detail */}
@@ -421,6 +462,8 @@ export default function ShiftBoard({
           onRemove={onRemove}
           isProcess={isProcess}
           deptColor={dept.primary}
+          scheduleRows={scheduleByLineId[activeLineObj.id] ?? []}
+          lineManpowerOverrides={lineManpowerOverrides}
         />
       )}
     </div>
