@@ -495,13 +495,13 @@ export default function ShiftAssignment({ onBack } = {}) {
       const rows = allScheduleByLineId[line.id] ?? [];
       const effective = getEffectiveSkuQuotas(line, rows, lineManpowerOverrides);
       for (const sku of effective) {
-        for (const sh of SHIFTS) {
-          map[`${sku.id}|${sh.id}`] = sku.effectiveQuota;
-        }
+        // Submit validation should match the editable scope in UI:
+        // assignment board allows staffing only the current shift.
+        map[`${sku.id}|${curShift}`] = sku.effectiveQuota;
       }
     }
     return map;
-  }, [allLinesCombined, allScheduleByLineId, lineManpowerOverrides]);
+  }, [allLinesCombined, allScheduleByLineId, lineManpowerOverrides, curShift]);
 
   const submitForApproval = useCallback(async () => {
     try {
@@ -511,6 +511,7 @@ export default function ShiftAssignment({ onBack } = {}) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           date: currentDate,
+          assignments,
           requiredBySkuShift,
           actor: {
             username: session?.username ?? '',
@@ -527,7 +528,7 @@ export default function ShiftAssignment({ onBack } = {}) {
     } catch (err) {
       setToast({ msg: err.message || 'Submit failed', type: 'warn' });
     }
-  }, [buildRequiredBySkuShift, currentDate, session, isAdmin]);
+  }, [buildRequiredBySkuShift, currentDate, assignments, session, isAdmin]);
 
   const approveSession = useCallback(async () => {
     try {

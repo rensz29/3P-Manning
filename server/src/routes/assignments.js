@@ -29,6 +29,7 @@ const submitSchema = z.object({
     displayName: z.string().optional(),
     role: z.enum(["admin", "user"]),
   }),
+  assignments: z.record(z.string(), z.any()).optional(),
   requiredBySkuShift: z.record(z.string(), z.coerce.number().int().min(0)).default({}),
 });
 
@@ -67,6 +68,7 @@ router.get(
 
     const { date } = parsed.data;
     const session = await getSession(date);
+    console.log(session);
     sendSuccess(res, {
       date,
       status: session?.status ?? "draft",
@@ -88,6 +90,7 @@ router.put(
 
     const { date, assignments } = parsed.data;
     const existing = await getSession(date);
+
     if (existing && (existing.status === "submitted" || existing.status === "approved")) {
       throw new AppError("Session is locked; cannot edit after submit/approve", 409);
     }
@@ -112,24 +115,45 @@ router.post(
   catchAsync(async (req, res) => {
     const parsed = submitSchema.safeParse(req.body);
     if (!parsed.success) throw new AppError("Invalid submit payload", 400);
-    const { date, actor, requiredBySkuShift } = parsed.data;
+    const { date, actor, requiredBySkuShift, assignments: submittedAssignments } = parsed.data;
 
     const session = await getSession(date);
     if (!session) throw new AppError("No assignment session found", 404);
     if (session.status === "approved") throw new AppError("Already approved", 409);
 
-    const assignments = session.assignments ?? {};
+    // Prefer the submit payload snapshot to avoid races with debounced autosave.
+    const assignments = submittedAssignments ?? session.assignments ?? {};
+    // Validate headcount at shift level to avoid false negatives when
+    // operators distribute manpower differently across SKUs in the same shift.
+    const requiredByShift = {};
     for (const [key, required] of Object.entries(requiredBySkuShift)) {
-      const [skuId, shiftStr] = key.split("|");
+      const [, shiftStr] = key.split("|");
       const shiftId = Number(shiftStr);
-      const assignedCount = (assignments?.[skuId]?.[shiftId] ?? []).length;
+      requiredByShift[shiftId] = (requiredByShift[shiftId] ?? 0) + required;
+    }
+
+    const assignedByShift = {};
+    for (const skuAssignments of Object.values(assignments)) {
+      if (!skuAssignments || typeof skuAssignments !== "object") continue;
+      for (const [shiftKey, empIds] of Object.entries(skuAssignments)) {
+        const shiftId = Number(shiftKey);
+        if (!Number.isFinite(shiftId)) continue;
+        const count = Array.isArray(empIds) ? empIds.length : 0;
+        assignedByShift[shiftId] = (assignedByShift[shiftId] ?? 0) + count;
+      }
+    }
+
+    for (const [shiftKey, required] of Object.entries(requiredByShift)) {
+      const shiftId = Number(shiftKey);
+      const assignedCount = assignedByShift[shiftId] ?? 0;
       if (assignedCount < required) {
-        throw new AppError(`Cannot submit: ${skuId} shift ${shiftId} requires ${required}, assigned ${assignedCount}`, 400);
+        throw new AppError(`Cannot submit: shift ${shiftId} requires ${required}, assigned ${assignedCount}`, 400);
       }
     }
 
     const updated = await saveSession(date, {
       ...session,
+      assignments,
       status: "submitted",
       submittedBy: actor.displayName || actor.username || "unknown",
       submittedAt: new Date().toISOString(),
