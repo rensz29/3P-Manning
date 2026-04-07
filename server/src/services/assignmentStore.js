@@ -8,6 +8,13 @@ function keyForDate(date) {
   return `assign:session:${date}`;
 }
 
+function expireAtForSessionDate(date) {
+  // Expire at the end of that session day (23:59:59 local server time).
+  const d = new Date(`${date}T23:59:59`);
+  if (Number.isNaN(d.getTime())) return null;
+  return Math.floor(d.getTime() / 1000);
+}
+
 async function initAssignmentStore() {
   const redisUrl = process.env.REDIS_URL;
   if (!redisUrl) {
@@ -75,10 +82,25 @@ async function saveSession(date, session) {
   });
   if (redisEnabled && redisClient) {
     await redisClient.set(k, JSON.stringify(payload));
+    if (payload.status === "approved") {
+      const ts = expireAtForSessionDate(date);
+      if (ts) {
+        await redisClient.expireAt(k, ts);
+      }
+    }
   } else {
     memoryStore.set(k, payload);
   }
   return payload;
+}
+
+async function deleteSession(date) {
+  const k = keyForDate(date);
+  if (redisEnabled && redisClient) {
+    await redisClient.del(k);
+  } else {
+    memoryStore.delete(k);
+  }
 }
 
 module.exports = {
@@ -86,5 +108,6 @@ module.exports = {
   closeAssignmentStore,
   getSession,
   saveSession,
+  deleteSession,
 };
 

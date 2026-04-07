@@ -1,5 +1,6 @@
 import { useState, useCallback, useMemo, useEffect } from 'react';
 import { SHIFTS, EMPLOYEE_COLORS } from '../data/lineData';
+import { ROLE_RATE_CARD, EMPLOYEE_ROLE_PROFILES } from '../data/employeeRateCard';
 
 // ─── Mock HRTA employees — replace with real API fetch ───────────────────────
 const MOCK_EMPLOYEES = [
@@ -9,11 +10,13 @@ const MOCK_EMPLOYEES = [
   'Pia Waldo','Rex Javier','Sara Ureta','Tom Hizon','Uma Xiao',
   'Victor Yap','Wanda Zapata',
 ].map((name, i) => ({
-  id: `emp-${i}`,
+  id: `emp-${i + 1}`,
   name,
   department: 'HRTA',
   type: '3P',
   colorIndex: i % EMPLOYEE_COLORS.length,
+  ...(EMPLOYEE_ROLE_PROFILES[i % EMPLOYEE_ROLE_PROFILES.length]),
+  rates: ROLE_RATE_CARD[EMPLOYEE_ROLE_PROFILES[i % EMPLOYEE_ROLE_PROFILES.length].role] ?? { dayPerHour: 0, nightPerHour: 0 },
 }));
 
 function buildEmptyMap(lines) {

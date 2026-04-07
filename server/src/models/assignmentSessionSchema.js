@@ -13,6 +13,10 @@ const assignmentSessionSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.Mixed,
       default: {},
     },
+    employees: {
+      type: [mongoose.Schema.Types.Mixed],
+      default: [],
+    },
     submittedBy: { type: String, default: "" },
     submittedAt: { type: Date, default: null },
     approvedBy: { type: String, default: "" },

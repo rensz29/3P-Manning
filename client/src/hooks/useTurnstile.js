@@ -94,12 +94,6 @@ const MOCK_ROWS = [
   { id: 'emp-19', name: 'Uma Xiao',        badgeNo: 'UN-1020', status: 0, entryTime: null    },
   { id: 'emp-20', name: 'Victor Yap',      badgeNo: 'UN-1021', status: 1, entryTime: '06:25' },
   { id: 'emp-21', name: 'Wanda Zapata',    badgeNo: 'UN-1022', status: 1, entryTime: '06:27' },
-  // These employees are in the building but NOT on any shift schedule → excess
-  { id: 'ext-0',  name: 'Ramon Dela Cruz', badgeNo: 'UN-2001', status: 1, entryTime: '06:08' },
-  { id: 'ext-1',  name: 'Marites Santos',  badgeNo: 'UN-2002', status: 1, entryTime: '06:11' },
-  { id: 'ext-2',  name: 'Jose Bautista',   badgeNo: 'UN-2003', status: 1, entryTime: '06:15' },
-  { id: 'ext-3',  name: 'Luisa Ramos',     badgeNo: 'UN-2004', status: 1, entryTime: '06:19' },
-  { id: 'ext-4',  name: 'Andres Garcia',   badgeNo: 'UN-2005', status: 0, entryTime: null    },
 ];
 
 // ─── 7-day excess history ─────────────────────────────────────────────────────

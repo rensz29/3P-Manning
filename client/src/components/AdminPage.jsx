@@ -215,7 +215,7 @@ function CalendarPreview({ records, search }) {
 }
 
 // ── Main AdminPage ─────────────────────────────────────────────────────────────
-export default function AdminPage({ onBack, onGoAnalytics, onGoSettings, displayName }) {
+export default function AdminPage({ onBack, onGoAnalytics, onGoSettings, onGoReport, displayName }) {
   const [tab, setTab]             = useState('schedule');
   const [file, setFile]           = useState(null);
   const [rawFlat, setRawFlat]     = useState(null);   // raw rows from preview
@@ -358,10 +358,11 @@ export default function AdminPage({ onBack, onGoAnalytics, onGoSettings, display
         </header>
 
         {/* ── Quick-access cards ── */}
-        <div style={{ padding: '24px 24px 0', display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: '14px', maxWidth: '1200px', margin: '0 auto' }}>
+        <div style={{ padding: '24px 24px 0', display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: '14px', maxWidth: '1200px', margin: '0 auto' }}>
           {[
             { icon: '📊', label: 'Analytics Dashboard', sub: 'Turnstile, excess trends, staffing', color: '#f59e0b', bg: '#fffbeb', border: '#fde68a', onClick: onGoAnalytics },
             { icon: '⚙️', label: 'Settings & Quotas',   sub: 'Configure manpower per line/SKU',  color: '#0057B8', bg: '#eff6ff', border: '#bfdbfe', onClick: onGoSettings },
+            { icon: '🧾', label: 'Approved Report',      sub: 'Cost and assignment reporting',    color: '#7c3aed', bg: '#f5f3ff', border: '#ddd6fe', onClick: onGoReport },
             { icon: '📋', label: 'Schedule Upload',      sub: 'Currently viewing',                color: '#0f766e', bg: '#f0fdfa', border: '#99f6e4', onClick: null },
           ].map(c => (
             <div key={c.label} className={c.onClick ? 'admin-card' : ''} onClick={c.onClick ?? undefined} style={{ background: c.bg, border: `1.5px solid ${c.border}`, borderRadius: '14px', padding: '18px 20px', cursor: c.onClick ? 'pointer' : 'default', display: 'flex', alignItems: 'center', gap: '14px', boxShadow: '0 1px 4px rgba(0,0,0,0.05)', transition: 'box-shadow 0.2s, transform 0.2s' }}>

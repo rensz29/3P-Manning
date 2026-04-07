@@ -66,7 +66,9 @@ export default function EmployeeCard({ employee, isAssigned, onDragStart, onDrag
       {/* Info */}
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontFamily: "'DM Sans',sans-serif", fontSize: '0.73rem', fontWeight: 600, color: '#111827', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{employee.name}</div>
-        <div style={{ fontFamily: "'DM Mono',monospace", fontSize: '0.52rem', color: '#9ca3af', marginTop: '1px' }}>HRTA · 3P</div>
+        <div style={{ fontFamily: "'DM Mono',monospace", fontSize: '0.52rem', color: '#9ca3af', marginTop: '1px' }}>
+          {employee.role ?? 'Operator'} · {employee.site ?? 'Site'} · {employee.rates?.dayPerHour ?? 0}/h
+        </div>
       </div>
 
       {/* Drag handle */}

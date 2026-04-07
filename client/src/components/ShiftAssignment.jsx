@@ -8,6 +8,7 @@ import ExcessPanel       from './ExcessPanel';
 import AnalyticsDashboard from './AnalyticsDashboard';
 import SettingsPage      from './SettingsPage';
 import AdminPage         from './AdminPage';
+import AdminReportPage   from './AdminReportPage';
 import LoginPage         from './LoginPage';
 import { io }            from 'socket.io-client';
 import { SHIFTS } from '../data/lineData';
@@ -45,6 +46,7 @@ const PAGES = {
   ANALYTICS: 'analytics',
   SETTINGS:  'settings',
   ADMIN:     'admin',
+  REPORT:    'report',
 };
 
 // ── Toast ──────────────────────────────────────────────────────────────────────
@@ -454,6 +456,7 @@ export default function ShiftAssignment({ onBack } = {}) {
           body: JSON.stringify({
             date: currentDate,
             assignments,
+            employees,
             actor: {
               username: session?.username ?? '',
               displayName: session?.displayName ?? '',
@@ -468,7 +471,7 @@ export default function ShiftAssignment({ onBack } = {}) {
     }, 250);
 
     return () => clearTimeout(t);
-  }, [assignRevision, assignments, assignmentsSignature, currentDate, session, isAdmin, sessionStatus]);
+  }, [assignRevision, assignments, assignmentsSignature, currentDate, employees, session, isAdmin, sessionStatus]);
 
   useEffect(() => {
     if (totalExcess > 0)
@@ -512,6 +515,7 @@ export default function ShiftAssignment({ onBack } = {}) {
         body: JSON.stringify({
           date: currentDate,
           assignments,
+          employees,
           requiredBySkuShift,
           actor: {
             username: session?.username ?? '',
@@ -528,7 +532,7 @@ export default function ShiftAssignment({ onBack } = {}) {
     } catch (err) {
       setToast({ msg: err.message || 'Submit failed', type: 'warn' });
     }
-  }, [buildRequiredBySkuShift, currentDate, assignments, session, isAdmin]);
+  }, [buildRequiredBySkuShift, currentDate, assignments, employees, session, isAdmin]);
 
   const approveSession = useCallback(async () => {
     try {
@@ -537,6 +541,11 @@ export default function ShiftAssignment({ onBack } = {}) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           date: currentDate,
+          excessSnapshot: {
+            currentShift: curShift,
+            totalExcess,
+            excessEmployees,
+          },
           actor: {
             username: session?.username ?? '',
             displayName: session?.displayName ?? '',
@@ -552,7 +561,7 @@ export default function ShiftAssignment({ onBack } = {}) {
     } catch (err) {
       setToast({ msg: err.message || 'Approve failed', type: 'warn' });
     }
-  }, [currentDate, session, isAdmin]);
+  }, [currentDate, curShift, totalExcess, excessEmployees, session, isAdmin]);
 
   // KPI totals (all plants combined — schedule-driven lines)
   const totalEmp      = employees.length;
@@ -591,6 +600,7 @@ export default function ShiftAssignment({ onBack } = {}) {
         onBack={() => setPage(PAGES.DRESSINGS)}
         onGoAnalytics={() => setPage(PAGES.ANALYTICS)}
         onGoSettings={() => setPage(PAGES.SETTINGS)}
+        onGoReport={() => setPage(PAGES.REPORT)}
       />
     );
   }
@@ -621,6 +631,14 @@ export default function ShiftAssignment({ onBack } = {}) {
         lineTotalsById={lineTotalsById}
         initialPlant={activePlant}
         onBack={() => setPage(activePlant === 'dressings' ? PAGES.DRESSINGS : PAGES.SAVOURY)}
+      />
+    );
+  }
+
+  if (page === PAGES.REPORT && isAdmin) {
+    return (
+      <AdminReportPage
+        onBack={() => setPage(PAGES.ADMIN)}
       />
     );
   }
@@ -691,6 +709,10 @@ export default function ShiftAssignment({ onBack } = {}) {
                   onMouseEnter={e => e.currentTarget.style.background = 'rgba(100,116,139,0.25)'}
                   onMouseLeave={e => e.currentTarget.style.background = 'rgba(100,116,139,0.15)'}
                 ><span>⚙️</span> Settings</button>
+                <button onClick={() => setPage(PAGES.REPORT)} style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 14px', borderRadius: '8px', background: 'rgba(124,58,237,0.16)', border: '1px solid rgba(124,58,237,0.35)', color: '#ddd6fe', cursor: 'pointer', fontFamily: "'DM Sans',sans-serif", fontSize: '0.72rem', fontWeight: 700, transition: 'background 0.15s' }}
+                  onMouseEnter={e => e.currentTarget.style.background = 'rgba(124,58,237,0.26)'}
+                  onMouseLeave={e => e.currentTarget.style.background = 'rgba(124,58,237,0.16)'}
+                ><span>🧾</span> Report</button>
               </>
             )}
             <div style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '5px 10px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.15)', background: sessionStatus === 'approved' ? 'rgba(16,185,129,0.2)' : sessionStatus === 'submitted' ? 'rgba(245,158,11,0.18)' : 'rgba(148,163,184,0.18)' }}>

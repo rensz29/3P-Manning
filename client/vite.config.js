@@ -9,11 +9,11 @@ export default defineConfig({
     port: 5015,
     proxy: {
       "/api": {
-        target: "http://localhost:3009",
+        target: "http://127.0.0.1:3009",
         changeOrigin: true,
       },
       "/socket.io": {
-        target: "http://localhost:3009",
+        target: "http://127.0.0.1:3009",
         changeOrigin: true,
         ws: true,
       },
