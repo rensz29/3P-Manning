@@ -8,6 +8,7 @@ const ScheduleDressing = require("../models/scheduleDressingSchema");
 const ScheduleSavoury = require("../models/scheduleSavourySchema");
 const { getSession, saveSession } = require("../services/assignmentStore");
 const { getIo, roomForDate } = require("../realtime/socket");
+const { getPool } = require('../config/pg');
 
 const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 
@@ -494,6 +495,27 @@ router.get(
     sendSuccess(res, report);
   })
 );
+
+
+router.get("/employees",
+  catchAsync(async (req, res) => {
+    try {
+      const pool = getPool();
+      const result = await pool.query(`
+        SELECT *
+        FROM hkvision.tbhikvision
+        WHERE "PersonGroup" ILIKE '%HRTA%'
+          AND "L_TID" = '1'
+          AND "C_Date" = CURRENT_DATE
+        ORDER BY "C_Time";
+      `);
+      console.log(result.rows)
+      res.json(result.rows);
+    } catch (err) {
+      console.error(err);
+      res.status(500).send("Server error");
+    }
+  }))
 
 module.exports = router;
 

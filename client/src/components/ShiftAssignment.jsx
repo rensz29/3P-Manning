@@ -642,6 +642,32 @@ export default function ShiftAssignment({ onBack } = {}) {
       />
     );
   }
+
+  useEffect(() => {
+    const loadEmployees = async () => {
+      try {
+        const res = await fetch('/api/v1/assignments/employees', {
+          method: 'GET',
+          headers: { 'Content-Type': 'application/json' },
+        });
+  
+        if (!res.ok) {
+          const txt = await res.text().catch(() => '');
+          throw new Error(
+            `Failed to load employees (${res.status})${txt ? `: ${txt}` : ''}`
+          );
+        }
+  
+        const data = await res.json(); // ✅ THIS IS WHAT YOU NEED
+  
+        console.log(data); // ✅ actual result
+      } catch (err) {
+        console.error(err);
+      }
+    };
+  
+    loadEmployees();
+  }, []);
   
   // ── Main shift assignment view ────────────────────────────────────────────
   return (

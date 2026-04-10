@@ -3,6 +3,7 @@ const http = require("http");
 const { Server } = require("socket.io");
 const app = require("./app");
 const { connect, disconnect } = require("./config/database");
+const pg = require("./config/pg");
 const { initSocket, roomForDate } = require("./realtime/socket");
 const { initAssignmentStore, closeAssignmentStore } = require("./services/assignmentStore");
 
@@ -13,6 +14,7 @@ connect()
   .then(() => {
     return initAssignmentStore();
   })
+  .then(() => pg.connect())
   .then(() => {
     const httpServer = http.createServer(app);
     const io = new Server(httpServer, {
@@ -43,6 +45,7 @@ connect()
       server.close(async () => {
         await closeAssignmentStore();
         await disconnect();
+        await pg.disconnect();  
         console.log("HTTP server closed.");
         process.exit(0);
       });
